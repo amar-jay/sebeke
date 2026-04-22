@@ -2,5 +2,39 @@
 name = "sebeke"
 version = "0.1.0"
 edition = "2024"
+description = "Distributed serverless-first infrastructure for robotics"
+
+# The primary infrastructure library
+[lib]
+name = "sebeke"
+path = "src/sebeke/lib.rs"
 
 [dependencies]
+# Backbone & Transport
+zenoh = "1.8.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# Serialization (CBOR for inter-node, JSON for Zenoh/Cloud interop)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ciborium = "0.2.2"
+
+# Networking & Cloud Interop
+# Using multipart features for binary-safe media transfers
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "multipart", "rustls"] }
+url = "2.4"
+
+# Utils
+clap = { version = "4.6.0", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1.0.102"
+
+[dev-dependencies]
+# Moved teloxide here as it's currently for illustration
+teloxide = "0.11"
+
+# A specific executable node
+[[bin]]
+name = "telegram_node"
+path = "src/nodes/telegram/main.rs"
