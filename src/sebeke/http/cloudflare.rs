@@ -270,7 +270,7 @@ impl Relay for WorkerRelay {
         };
         let client_push = self.client.clone();
         
-        let topic_cache = Arc::new(Cache::builder()
+        let topic_cache: Arc<Cache<String, Vec<(String, super::config::CloudflareConfig)>>> = Arc::new(Cache::builder()
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(5 * 60))
             .build());
@@ -331,12 +331,17 @@ impl Relay for WorkerRelay {
                             .text("machine_id", cfg.machine_id.clone())
                             .part("payload", part);
 
-                        let _ = client_push
+                        if let Err(e) = client_push
                             .post(&push_url)
                             .bearer_auth(&cfg.api_token)
                             .multipart(form)
                             .send()
-                            .await;
+                            .await 
+                        {
+                            println!("Error sending to Cloudflare: {}", e);
+                        } else {
+                            println!("Data sent to Cloudflare target: {}", push_url);
+                        }
                     }
                 }
             }

@@ -41,6 +41,9 @@ bytes = "1.11.1"
 axum-extra = "0.12.6"
 multer = "3.1.0"
 moka = { version = "0.12.15", features = ["sync"] }
+ratatui = "0.30.0"
+crossterm = "0.29.0"
+
 
 [dev-dependencies]
 # Moved teloxide here as it's currently for illustration
@@ -50,3 +53,7 @@ teloxide = "0.11"
 [[bin]]
 name = "telegram_node"
 path = "src/nodes/telegram/main.rs"
+
+[[bin]]
+name = "tui_node"
+path = "src/nodes/tui/main.rs"
