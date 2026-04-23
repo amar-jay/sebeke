@@ -12,6 +12,13 @@ use zenoh::{Session, bytes::Encoding};
 
 use super::config::{Relay, WorkerConfig};
 use async_trait::async_trait;
+use axum::{
+    extract::{State, Multipart},
+    http::StatusCode,
+    routing::post,
+    Router,
+};
+use reqwest::multipart;
 
 #[derive(Debug, Clone, Serialize)]
 struct BindPayload<'a> {
@@ -193,52 +200,60 @@ impl Relay for WorkerRelay {
     }
 
     async fn listen(&self) -> Result<()> {
-        // Spawn a background task to periodically pull from workers
         let workers = match self.workers.read() {
             Ok(w) => w.clone(),
             Err(_) => return Err(anyhow!("worker list is poisoned")),
         };
         let session = self.session.clone();
         let client = self.client.clone();
+        
+        let session_for_axum = self.session.clone();
 
         tokio::spawn(async move {
-            loop {
-                let worker_list: Vec<(String, WorkerConfig)> = workers
-                    .iter()
-                    .map(|entry| (entry.key().clone(), entry.value().clone()))
-                    .collect();
-
-                for (base_url, config) in worker_list {
-                    if let WorkerConfig::Cloudflare(cfg) = config {
-                        let pull_url = format!("{}{}", base_url, cfg.pull_path);
-                        let timeout = Duration::from_millis(cfg.request_timeout_ms.max(500));
-
-                        let res = client
-                            .get(&pull_url)
-                            .bearer_auth(&cfg.api_token)
-                            .timeout(timeout)
-                            .send()
-                            .await;
-
-                        if let Ok(response) = res {
-                            if let Ok(bytes) = response.bytes().await {
-                                if let Ok(data) = WorkerRelay::deserialize::<Vec<PullPayload>>(
-                                    bytes.as_ref(),
-                                    Encoding::APPLICATION_CBOR,
-                                ) {
-                                    for payload in data {
-                                        let _ = session.put(payload.topic, payload.data).await;
+            let app = Router::new()
+                .route("/cloudflare/webhook", post(
+                    |State(session): State<Arc<Session>>, mut multipart: Multipart| async move {
+                        let mut success = false;
+                        
+                        while let Ok(Some(field)) = multipart.next_field().await {
+                            let name = field.name().unwrap_or_default().to_string();
+                            
+                            if name == "payload" {
+                                if let Ok(bytes) = field.bytes().await {
+                                    if let Ok(data) = WorkerRelay::deserialize::<Vec<PullPayload>>(
+                                        bytes.as_ref(),
+                                        Encoding::APPLICATION_CBOR,
+                                    ) {
+                                        for payload in data {
+                                            let _ = session.put(payload.topic, payload.data).await;
+                                        }
+                                        success = true;
                                     }
+                                }
+                            } else if name == "media" {
+                                // Auxiliary support for multipart data
+                                // Here, field.bytes().await could handle JPEG/Video buffers matching a mapped media topic 
+                                if let Ok(bytes) = field.bytes().await {
+                                    let _ = session.put("media/incoming", bytes).await;
                                 }
                             }
                         }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                        if success {
+                            StatusCode::OK
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        }
+                    },
+                ))
+                .with_state(session_for_axum);
+
+            if let Ok(listener) = tokio::net::TcpListener::bind("0.0.0.0:8080").await {
+                let _ = axum::serve(listener, app).await;
             }
         });
 
-        // Subscribe to Zenoh topics to push to workers
+        // Edge -> Cloudflare (Egress):
         let subscriber = self
             .session
             .declare_subscriber("**")
@@ -283,11 +298,20 @@ impl Relay for WorkerRelay {
                                         let push_url = format!("{}{}", base_url, cfg.push_path);
                                         
                                         if let Ok(body) = WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR) {
+                                            // Handle multipart push (CBOR info + optional media boundary support)
+                                            let part = multipart::Part::bytes(body)
+                                                .file_name("cbor_payload")
+                                                .mime_str("application/cbor")
+                                                .unwrap();
+                                                
+                                            let form = multipart::Form::new()
+                                                .text("machine_id", cfg.machine_id.clone())
+                                                .part("payload", part);
+
                                             let _ = client_push
                                                 .post(&push_url)
                                                 .bearer_auth(&cfg.api_token)
-                                                .header("Content-Type", "application/cbor")
-                                                .body(body)
+                                                .multipart(form)
                                                 .send()
                                                 .await;
                                         }

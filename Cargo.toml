@@ -34,6 +34,11 @@ regex = "1.12.3"
 dashmap = "6.1.0"
 futures = "0.3.32"
 serde_bytes = "0.11.19"
+axum = { version = "0.8.9", features = ["multipart"] }
+tokio-stream = "0.1.18"
+bytes = "1.11.1"
+axum-extra = "0.12.6"
+multer = "3.1.0"
 
 [dev-dependencies]
 # Moved teloxide here as it's currently for illustration
