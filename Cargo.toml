@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Distributed serverless-first infrastructure for robotics"
 
+
 # The primary infrastructure library
 [lib]
 name = "sebeke"
@@ -39,6 +40,7 @@ tokio-stream = "0.1.18"
 bytes = "1.11.1"
 axum-extra = "0.12.6"
 multer = "3.1.0"
+moka = { version = "0.12.15", features = ["sync"] }
 
 [dev-dependencies]
 # Moved teloxide here as it's currently for illustration

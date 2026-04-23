@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use dashmap::DashMap;
+use moka::sync::Cache;
 use serde::{Serialize, Deserialize, de::DeserializeOwned};
 use zenoh::{Session, bytes::Encoding};
 
@@ -268,57 +269,74 @@ impl Relay for WorkerRelay {
             Err(_) => return Err(anyhow!("worker list is poisoned")),
         };
         let client_push = self.client.clone();
+        
+        let topic_cache = Arc::new(Cache::builder()
+            .max_capacity(10_000)
+            .time_to_idle(Duration::from_secs(5 * 60))
+            .build());
 
         tokio::spawn(async move {
             while let Ok(sample) = subscriber.recv_async().await {
                 let topic = sample.key_expr().as_str();
                 let payload_bytes = sample.payload().to_bytes().into_owned();
 
-                let registry: Vec<(String, Vec<String>)> = proxy_registry
-                    .iter()
-                    .map(|entry| (entry.key().clone(), entry.value().clone()))
-                    .collect();
+                // Check cache for mapped Push URLs and Configs for this concrete topic
+                let targets = if let Some(cached) = topic_cache.get(topic) {
+                    cached.clone()
+                } else {
+                    let mut matched = Vec::new();
+                    let registry: Vec<(String, Vec<String>)> = proxy_registry
+                        .iter()
+                        .map(|entry| (entry.key().clone(), entry.value().clone()))
+                        .collect();
 
-                for (local_pattern, url_patterns) in registry {
-                    for url_pattern in url_patterns {
-                        if let Ok(resolved_url) =
-                            super::utils::resolve_zenoh_url(&local_pattern, &url_pattern, topic)
-                        {
-                            // Find which worker matches this url pattern
-                            for worker_entry in workers_push.iter() {
-                                let base_url = worker_entry.key();
-                                if resolved_url.starts_with(base_url) {
-                                    if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
-                                        let push_payload = PushPayload {
-                                            machine_id: cfg.machine_id.clone(),
-                                            topic: topic.to_string(),
-                                            data: payload_bytes.clone(),
-                                        };
-
-                                        let push_url = format!("{}{}", base_url, cfg.push_path);
-                                        
-                                        if let Ok(body) = WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR) {
-                                            // Handle multipart push (CBOR info + optional media boundary support)
-                                            let part = multipart::Part::bytes(body)
-                                                .file_name("cbor_payload")
-                                                .mime_str("application/cbor")
-                                                .unwrap();
-                                                
-                                            let form = multipart::Form::new()
-                                                .text("machine_id", cfg.machine_id.clone())
-                                                .part("payload", part);
-
-                                            let _ = client_push
-                                                .post(&push_url)
-                                                .bearer_auth(&cfg.api_token)
-                                                .multipart(form)
-                                                .send()
-                                                .await;
+                    for (local_pattern, url_patterns) in registry {
+                        for url_pattern in url_patterns {
+                            if let Ok(resolved_url) =
+                                super::utils::resolve_zenoh_url(&local_pattern, &url_pattern, topic)
+                            {
+                                // Find which worker matches this url pattern
+                                for worker_entry in workers_push.iter() {
+                                    let base_url = worker_entry.key();
+                                    if resolved_url.starts_with(base_url) {
+                                        if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
+                                            let push_url = format!("{}{}", base_url, cfg.push_path);
+                                            matched.push((push_url, cfg.clone()));
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                    // Memoize O(1) loop target
+                    topic_cache.insert(topic.to_string(), matched.clone());
+                    matched
+                };
+
+                for (push_url, cfg) in targets {
+                    let push_payload = PushPayload {
+                        machine_id: cfg.machine_id.clone(),
+                        topic: topic.to_string(),
+                        data: payload_bytes.clone(),
+                    };
+
+                    if let Ok(body) = WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR) {
+                        // Handle multipart push (CBOR info + optional media boundary support)
+                        let part = multipart::Part::bytes(body)
+                            .file_name("cbor_payload")
+                            .mime_str("application/cbor")
+                            .unwrap();
+                            
+                        let form = multipart::Form::new()
+                            .text("machine_id", cfg.machine_id.clone())
+                            .part("payload", part);
+
+                        let _ = client_push
+                            .post(&push_url)
+                            .bearer_auth(&cfg.api_token)
+                            .multipart(form)
+                            .send()
+                            .await;
                     }
                 }
             }

@@ -10,9 +10,9 @@
 		"jsx": "react-jsx",
 
     /* Specify what module code is generated. */
-		"module": "es2022",
+		"module": "nodenext",
     /* Specify how TypeScript looks up a file from a given module specifier. */
-		"moduleResolution": "node",
+		"moduleResolution": "node16",
     /* Enable importing .json files */
 		"resolveJsonModule": true,
 
@@ -35,6 +35,10 @@
 		"strict": true,
 
     /* Skip type checking all .d.ts files. */
-		"skipLibCheck": true
+		"skipLibCheck": true,
+		"types": [
+			"./worker-configuration.d.ts",
+			"node"
+		]
 	}
 }
