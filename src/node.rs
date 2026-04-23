@@ -1,26 +1,28 @@
 use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::{Result, anyhow};
+use futures::Future;
 use serde::{Serialize, de::DeserializeOwned};
 use zenoh::{bytes::Encoding, config::WhatAmI};
 
-struct Node {
-    session: zenoh::Session,
+pub struct Node {
+    pub session: Arc<zenoh::Session>,
 }
 
 impl Node {
     pub async fn new() -> Self {
-        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
-        let node = Self { session: session };
-        node.log("Session established: {session:?}");
+        let session = Arc::new(zenoh::open(zenoh::Config::default()).await.unwrap());
+        let node = Self { session: session.clone() };
+        node.log(&format!("Session established: {:?}", session.info().zid().await));
         node
     }
 
-    fn log(&self, message: &str) {
-        println!("[{}] {}", self.session.zid(), message);
+    pub fn log(&self, message: &str) {
+        // Just print, could use futures for reading the runtime zid but keeping it simple
+        println!("[Node] {}", message);
     }
 
-    async fn probe(timeout: Duration) -> bool {
+    pub async fn probe(timeout: Duration) -> bool {
         let receiver = zenoh::scout(WhatAmI::Peer | WhatAmI::Router, zenoh::Config::default())
             .await
             .unwrap();
@@ -78,6 +80,10 @@ impl Node {
                     .map_err(|_| anyhow::anyhow!("Failed to serialize sample into CBOR format"))?;
                 Ok(bytes)
             }
+            Encoding::TEXT_PLAIN => {
+                let s = serde_json::to_string(sample).map_err(|_| anyhow::anyhow!("Failed to stringify"))?;
+                Ok(s.into_bytes())
+            }
             _ => Err(anyhow!("Unsupported serialization format")),
         }
     }
@@ -94,13 +100,22 @@ impl Node {
                     )
                 })
             }
+            Encoding::TEXT_PLAIN => {
+                serde_json::from_slice(bytes).map_err(|_| {
+                    anyhow!(
+                        "Failed to deserialize TEXT bytes into the {} type",
+                        std::any::type_name::<T>()
+                    )
+                })
+            }
             _ => Err(anyhow!("Unsupported serialization format")),
         }
     }
 
-    pub async fn subscribe<F, Fut>(self: Arc<Self>, topic: &str, callback: F) -> Result<()>
+    pub async fn subscribe<T, F, Fut>(&self, topic: &str, callback: F) -> Result<()>
     where
-        F: Fn(Message) -> Fut + Send + Sync + 'static,
+        T: DeserializeOwned + Send + Sync + 'static,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let subscriber = self
@@ -112,9 +127,8 @@ impl Node {
         // Declare liveliness token so other nodes can discover this topic
         let liveliness = self.session.liveliness().declare_token(topic).await;
 
-        self.log("Subscriber loop started for: {topic:?}");
+        self.log(&format!("Subscriber loop started for: {:?}", topic));
 
-        let self_clone = Arc::clone(&self);
         tokio::spawn(async move {
             // Keep liveliness alive as long as this loop runs
             let _keep_alive = liveliness;
@@ -122,15 +136,15 @@ impl Node {
             while let Ok(sample) = subscriber.recv_async().await {
                 let bytes = sample.payload().to_bytes();
 
-                // Assuming your deserialize function is available
-                match Self::deserialize::<Message>(&bytes, sample.encoding().clone()) {
+                match Self::deserialize::<T>(&bytes, sample.encoding().clone()) {
                     Ok(msg) => callback(msg).await,
                     Err(e) => {
-                        self_clone.log(&format!(
-                            "DROPPED: Malformed packet on topic '{}'. {}",
+                        println!(
+                            "DROPPED: Malformed packet on topic '{}' ({:?}). {}",
                             sample.key_expr(),
+                            sample.encoding(),
                             e
-                        ));
+                        );
                     }
                 }
             }
@@ -145,6 +159,7 @@ impl Node {
         // .put() is the standard way to broadcast data in Zenoh
         self.session
             .put(topic, bytes)
+            .encoding(Encoding::APPLICATION_CBOR)
             .await
             .map_err(|e| anyhow::anyhow!("Zenoh publish error on topic '{}': {}", topic, e))?;
 
@@ -152,6 +167,3 @@ impl Node {
         Ok(())
     }
 }
-
-#[derive(serde::Deserialize)]
-struct Message {}
