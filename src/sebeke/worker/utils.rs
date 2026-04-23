@@ -7,41 +7,44 @@ pub enum ResolverError {
     NonCanonicalPath(String),
 }
 
-pub struct ProxyEntry {
-    pub local_pattern: String,
-    pub remote_pattern: String,
-}
-
 /// Validates Zenoh canonization.
 fn is_canonical(path: &str) -> bool {
-    if path.is_empty() { return true; }
+    if path.is_empty() {
+        return true;
+    }
     if path.contains("//") {
         return false;
     }
 
-		// It captures "misaligned" wildcards like 'events**' or 'a**'
+    // It captures "misaligned" wildcards like 'events**' or 'a**'
     let misaligned_re = Regex::new(r"[^/]\*\*").unwrap();
-    if misaligned_re.is_match(path){
-				return false;
-		}
+    if misaligned_re.is_match(path) {
+        return false;
+    }
     true
 }
 
 fn is_valid_zenoh(path: &str) -> bool {
-    if path.is_empty() { return true; }
-    if  path.ends_with('/') || path.contains("//") {
+    if path.is_empty() {
+        return true;
+    }
+    if path.ends_with('/') || path.contains("//") {
         return false;
     }
 
-		// It captures "misaligned" wildcards like 'events**' or 'a**'
+    // It captures "misaligned" wildcards like 'events**' or 'a**'
     let misaligned_re = Regex::new(r"[^/]\*\*").unwrap();
-    if misaligned_re.is_match(path){
-				return false;
-		}
+    if misaligned_re.is_match(path) {
+        return false;
+    }
     true
 }
 
-pub fn resolve_zenoh_url(local_pattern: &str, remote_pattern: &str, topic: &str) -> Result<String, ResolverError> {
+pub fn resolve_zenoh_url(
+    local_pattern: &str,
+    remote_pattern: &str,
+    topic: &str,
+) -> Result<String, ResolverError> {
     // 1. Strict Canonization Check (The "Effective" Part)
     if !is_canonical(topic) {
         return Err(ResolverError::NonCanonicalPath(topic.to_string()));
@@ -70,7 +73,7 @@ pub fn resolve_zenoh_url(local_pattern: &str, remote_pattern: &str, topic: &str)
     // 3. Match and Map
     if let Some(caps) = re.captures(topic) {
         let mut result = remote_pattern.to_string();
-        
+
         // Replace wildcards in order of discovery in the remote pattern
         for i in 1..caps.len() {
             let captured_value = &caps[i];
@@ -111,18 +114,35 @@ mod tests {
     #[test]
     fn test_double_wildcard_suffix() {
         // Should capture multiple segments
-        let result = resolve_zenoh_url("sensors/**", "http://api/v1/**", "sensors/building1/floor2/temp").unwrap();
+        let result = resolve_zenoh_url(
+            "sensors/**",
+            "http://api/v1/**",
+            "sensors/building1/floor2/temp",
+        )
+        .unwrap();
         assert_eq!(result, "http://api/v1/building1/floor2/temp");
     }
 
     #[test]
     fn test_single_wildcard_middle() {
         // Should match exactly one segment
-        let result = resolve_zenoh_url("room/*/lighting", "http://api/electricity/*/power", "room/kitchen/lighting").unwrap();
+        let result = resolve_zenoh_url(
+            "room/*/lighting",
+            "http://api/electricity/*/power",
+            "room/kitchen/lighting",
+        )
+        .unwrap();
         assert_eq!(result, "http://api/electricity/kitchen/power");
-        
+
         // Should fail if there are extra segments
-        assert!(resolve_zenoh_url("room/*/lighting", "http://api/electricity/*/power", "room/kitchen/area1/lighting").is_err());
+        assert!(
+            resolve_zenoh_url(
+                "room/*/lighting",
+                "http://api/electricity/*/power",
+                "room/kitchen/area1/lighting"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -133,7 +153,12 @@ mod tests {
 
     #[test]
     fn test_mixed_wildcards() {
-        let result = resolve_zenoh_url("geo/*/building/**", "map/*/struct/**", "geo/london/building/mall/top_floor").unwrap();
+        let result = resolve_zenoh_url(
+            "geo/*/building/**",
+            "map/*/struct/**",
+            "geo/london/building/mall/top_floor",
+        )
+        .unwrap();
         assert_eq!(result, "map/london/struct/mall/top_floor");
     }
 
@@ -151,10 +176,13 @@ mod tests {
         // Zenoh ** can match zero segments if there's a trailing slash or logical break,
         // but typically matches at least one. Our regex (.+) requires at least one char.
         // If you want zero-length matches, change (.+) to (.*) in the code.
-        assert_eq!(resolve_zenoh_url("data/**", "archive/**", "data/").unwrap(), "archive/");
+        assert_eq!(
+            resolve_zenoh_url("data/**", "archive/**", "data/").unwrap(),
+            "archive/"
+        );
     }
 
-		    #[test]
+    #[test]
     fn url_pattern_without_trailing_slash() {
         // trim_end_matches("/**") doesn't match, trim_end_matches("**") doesn't match
         // So this is treated as exact match, not wildcard — topic must equal "/events/**"
@@ -166,15 +194,21 @@ mod tests {
 
     #[test]
     fn wildcard_local_prefix_without_slash() {
-				// invalid local pattern per zenoh syntax. // -> /
+        // invalid local pattern per zenoh syntax. // -> /
         assert!(
-            resolve_zenoh_url("/events**", "https://api.example.com/v1/**", "/events/orders").is_err());
+            resolve_zenoh_url(
+                "/events**",
+                "https://api.example.com/v1/**",
+                "/events/orders"
+            )
+            .is_err()
+        );
     }
 
-		    #[test]
+    #[test]
     fn topic_with_double_slash() {
         assert!(
-            resolve_zenoh_url( "/**", "https://api.example.com/**", "//anything/here/").is_err(),
+            resolve_zenoh_url("/**", "https://api.example.com/**", "//anything/here/").is_err(),
         );
     }
 }

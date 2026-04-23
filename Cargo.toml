@@ -12,7 +12,7 @@ path = "src/sebeke/lib.rs"
 [dependencies]
 # Backbone & Transport
 zenoh = "1.8.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "rt", "time"] }
 
 # Serialization (CBOR for inter-node, JSON for Zenoh/Cloud interop)
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +32,8 @@ anyhow = "1.0.102"
 async-trait = "0.1.89"
 regex = "1.12.3"
 dashmap = "6.1.0"
+futures = "0.3.32"
+serde_bytes = "0.11.19"
 
 [dev-dependencies]
 # Moved teloxide here as it's currently for illustration
