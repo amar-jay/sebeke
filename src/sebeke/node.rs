@@ -135,7 +135,6 @@ impl Node {
 														e
 						            ));
 										}
-										_ => continue
 								}
             }
         });
