@@ -4,7 +4,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use zenoh::bytes::Encoding;
 
-use sebeke::http::{cloudflare::WorkerRelay, config::{self, Relay}};
+use sebeke::http::{
+    cloudflare::WorkerRelay,
+    config::{self, Relay},
+};
 
 // Worker URL provided by Cloudflare
 const WORKER_URL: &str = "https://cloudflare.abdelmanan-abdelrahman03.workers.dev";
@@ -19,18 +22,32 @@ async fn main() -> anyhow::Result<()> {
     let workerd = WorkerRelay::new(session.clone());
 
     // 2. Bind the Cloudflare Worker to the Edge process
-    println!("🔌 Binding edge router to Cloudflare worker: {}", WORKER_URL);
-    workerd.bind_worker(WORKER_URL, config::WorkerConfig::Cloudflare(config::CloudflareConfig {
-        api_token: "local-dev-token".to_string(), // In production, pass an actual security token
-        machine_id: "edge-test-machine-01".to_string(),
-        push_path: "/".to_string(),             // Egress POST path on worker
-        ..Default::default()
-    })).await.unwrap();
+    println!(
+        "🔌 Binding edge router to Cloudflare worker: {}",
+        WORKER_URL
+    );
+    workerd
+        .bind_worker(
+            WORKER_URL,
+            config::WorkerConfig::Cloudflare(config::CloudflareConfig {
+                api_token: "local-dev-token".to_string(), // In production, pass an actual security token
+                machine_id: "edge-test-machine-01".to_string(),
+                push_path: "/".to_string(), // Egress POST path on worker
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
 
     // 3. Register a Proxy rule
     // Matches any topic under "sensors/" and forwards it to the root of the worker
-    println!("🔗 Registering proxy mapping: sensors/** -> {}/", WORKER_URL);
-    workerd.register_proxy("sensors/**", &format!("{}/", WORKER_URL)).unwrap();
+    println!(
+        "🔗 Registering proxy mapping: sensors/** -> {}/",
+        WORKER_URL
+    );
+    workerd
+        .register_proxy("sensors/**", &format!("{}/", WORKER_URL))
+        .unwrap();
 
     // 4. Start the background listeners for Egress push and Ingress pull/webhooks
     println!("📡 Starting worker multiplexer listener...");
@@ -41,10 +58,14 @@ async fn main() -> anyhow::Result<()> {
 
     // 5. Publish Telemetry via Zenoh
     let message = "Test IMU Vector Data X=0 Y=1 Z=0";
-    println!("🚀 Publishing simulated payload to Zenoh topic '{}' -> {}", TOPIC, message);
-    
+    println!(
+        "🚀 Publishing simulated payload to Zenoh topic '{}' -> {}",
+        TOPIC, message
+    );
+
     // As per `WorkerRelay` logic, any `Vec<u8>` put on Zenoh is grabbed by `listen` and then mapped.
-    session.put(TOPIC, message)
+    session
+        .put(TOPIC, message)
         .encoding(Encoding::TEXT_PLAIN) // Data bytes inner payload mapping
         .await
         .unwrap();
@@ -64,7 +85,10 @@ async fn main() -> anyhow::Result<()> {
         let result = get_resp.text().await?;
         println!("✅ Test Passed! Cloudflare responded: \n{}", result);
     } else {
-        println!("❌ Test Failed! Worker responded: \n{}", get_resp.text().await?);
+        println!(
+            "❌ Test Failed! Worker responded: \n{}",
+            get_resp.text().await?
+        );
     }
 
     Ok(())

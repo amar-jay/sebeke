@@ -8,16 +8,16 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use dashmap::DashMap;
 use moka::sync::Cache;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zenoh::{Session, bytes::Encoding};
 
 use super::config::{Relay, WorkerConfig};
 use async_trait::async_trait;
 use axum::{
-    extract::{State, Multipart},
+    Router,
+    extract::{Multipart, State},
     http::StatusCode,
     routing::post,
-    Router,
 };
 use reqwest::multipart;
 
@@ -207,7 +207,7 @@ impl Relay for WorkerRelay {
         };
         let session = self.session.clone();
         let client = self.client.clone();
-        
+
         let session_for_axum = self.session.clone();
 
         tokio::spawn(async move {
@@ -215,10 +215,8 @@ impl Relay for WorkerRelay {
                 .route("/cloudflare/webhook", post(
                     |State(session): State<Arc<Session>>, mut multipart: Multipart| async move {
                         let mut success = false;
-                        
                         while let Ok(Some(field)) = multipart.next_field().await {
                             let name = field.name().unwrap_or_default().to_string();
-                            
                             if name == "payload" {
                                 if let Ok(bytes) = field.bytes().await {
                                     if let Ok(data) = WorkerRelay::deserialize::<Vec<PullPayload>>(
@@ -269,11 +267,14 @@ impl Relay for WorkerRelay {
             Err(_) => return Err(anyhow!("worker list is poisoned")),
         };
         let client_push = self.client.clone();
-        
-        let topic_cache: Arc<Cache<String, Vec<(String, super::config::CloudflareConfig)>>> = Arc::new(Cache::builder()
-            .max_capacity(10_000)
-            .time_to_idle(Duration::from_secs(5 * 60))
-            .build());
+
+        let topic_cache: Arc<Cache<String, Vec<(String, super::config::CloudflareConfig)>>> =
+            Arc::new(
+                Cache::builder()
+                    .max_capacity(10_000)
+                    .time_to_idle(Duration::from_secs(5 * 60))
+                    .build(),
+            );
 
         tokio::spawn(async move {
             while let Ok(sample) = subscriber.recv_async().await {
@@ -299,7 +300,8 @@ impl Relay for WorkerRelay {
                                 for worker_entry in workers_push.iter() {
                                     let base_url = worker_entry.key();
                                     if resolved_url.starts_with(base_url) {
-                                        if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
+                                        if let WorkerConfig::Cloudflare(cfg) = worker_entry.value()
+                                        {
                                             let push_url = format!("{}{}", base_url, cfg.push_path);
                                             matched.push((push_url, cfg.clone()));
                                         }
@@ -320,13 +322,15 @@ impl Relay for WorkerRelay {
                         data: payload_bytes.clone(),
                     };
 
-                    if let Ok(body) = WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR) {
+                    if let Ok(body) =
+                        WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR)
+                    {
                         // Handle multipart push (CBOR info + optional media boundary support)
                         let part = multipart::Part::bytes(body)
                             .file_name("cbor_payload")
                             .mime_str("application/cbor")
                             .unwrap();
-                            
+
                         let form = multipart::Form::new()
                             .text("machine_id", cfg.machine_id.clone())
                             .part("payload", part);
@@ -336,7 +340,7 @@ impl Relay for WorkerRelay {
                             .bearer_auth(&cfg.api_token)
                             .multipart(form)
                             .send()
-                            .await 
+                            .await
                         {
                             println!("Error sending to Cloudflare: {}", e);
                         } else {

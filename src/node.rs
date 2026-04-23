@@ -12,8 +12,13 @@ pub struct Node {
 impl Node {
     pub async fn new() -> Self {
         let session = Arc::new(zenoh::open(zenoh::Config::default()).await.unwrap());
-        let node = Self { session: session.clone() };
-        node.log(&format!("Session established: {:?}", session.info().zid().await));
+        let node = Self {
+            session: session.clone(),
+        };
+        node.log(&format!(
+            "Session established: {:?}",
+            session.info().zid().await
+        ));
         node
     }
 
@@ -81,7 +86,8 @@ impl Node {
                 Ok(bytes)
             }
             Encoding::TEXT_PLAIN => {
-                let s = serde_json::to_string(sample).map_err(|_| anyhow::anyhow!("Failed to stringify"))?;
+                let s = serde_json::to_string(sample)
+                    .map_err(|_| anyhow::anyhow!("Failed to stringify"))?;
                 Ok(s.into_bytes())
             }
             _ => Err(anyhow!("Unsupported serialization format")),
@@ -100,14 +106,12 @@ impl Node {
                     )
                 })
             }
-            Encoding::TEXT_PLAIN => {
-                serde_json::from_slice(bytes).map_err(|_| {
-                    anyhow!(
-                        "Failed to deserialize TEXT bytes into the {} type",
-                        std::any::type_name::<T>()
-                    )
-                })
-            }
+            Encoding::TEXT_PLAIN => serde_json::from_slice(bytes).map_err(|_| {
+                anyhow!(
+                    "Failed to deserialize TEXT bytes into the {} type",
+                    std::any::type_name::<T>()
+                )
+            }),
             _ => Err(anyhow!("Unsupported serialization format")),
         }
     }

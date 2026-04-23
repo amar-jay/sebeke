@@ -51,7 +51,7 @@ pub struct CloudflareConfig {
     pub unbind_path: String,
     pub push_path: String,
     pub pull_path: String,
-		pub local_address: String,
+    pub local_address: String,
 }
 
 impl Default for CloudflareConfig {
@@ -65,7 +65,7 @@ impl Default for CloudflareConfig {
             unbind_path: "/unbind".to_string(),
             push_path: "/push".to_string(),
             pull_path: "/pull".to_string(),
-						local_address: "http://localhost:8080".to_string(),
+            local_address: "http://localhost:8080".to_string(),
         }
     }
 }

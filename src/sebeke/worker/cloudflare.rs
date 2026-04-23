@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use dashmap::DashMap;
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zenoh::{Session, bytes::Encoding};
 
 use super::config::{Relay, WorkerConfig};
@@ -281,8 +281,11 @@ impl Relay for WorkerRelay {
                                         };
 
                                         let push_url = format!("{}{}", base_url, cfg.push_path);
-                                        
-                                        if let Ok(body) = WorkerRelay::serialize(&push_payload, Encoding::APPLICATION_CBOR) {
+
+                                        if let Ok(body) = WorkerRelay::serialize(
+                                            &push_payload,
+                                            Encoding::APPLICATION_CBOR,
+                                        ) {
                                             let _ = client_push
                                                 .post(&push_url)
                                                 .bearer_auth(&cfg.api_token)

@@ -6,15 +6,15 @@ use std::time::Duration;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
-    Frame, Terminal,
 };
 use tokio::sync::mpsc;
 use tokio::time;
@@ -106,8 +106,9 @@ async fn run_app<B: Backend>(
     app: &mut AppState,
     rx: &mut mpsc::Receiver<AppEvent>,
     session: Arc<zenoh::Session>,
-) -> io::Result<()> 
-where std::io::Error: From<<B as Backend>::Error>
+) -> io::Result<()>
+where
+    std::io::Error: From<<B as Backend>::Error>,
 {
     loop {
         // Draw the UI
@@ -126,7 +127,8 @@ where std::io::Error: From<<B as Backend>::Error>
                             let msg = std::mem::take(&mut app.input);
                             if !msg.is_empty() {
                                 // Publish message to Zenoh
-                                let _ = session.put(&app.topic, msg)
+                                let _ = session
+                                    .put(&app.topic, msg)
                                     .encoding(Encoding::TEXT_PLAIN)
                                     .await;
                             }
@@ -160,14 +162,21 @@ fn ui(f: &mut Frame, app: &AppState) {
         .map(|m| ListItem::new(Line::from(Span::raw(format!(">>> {}", m)))))
         .collect();
 
-    let messages_list = List::new(messages)
-        .block(Block::default().borders(Borders::ALL).title(format!(" Received Messages on topic '{}' ", app.topic)));
-        
+    let messages_list = List::new(messages).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Received Messages on topic '{}' ", app.topic)),
+    );
+
     f.render_widget(messages_list, layout[0]);
 
     let input_par = Paragraph::new(app.input.as_str())
         .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL).title(" Your Message (Enter: Send, Esc: Quit) "));
-        
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Your Message (Enter: Send, Esc: Quit) "),
+        );
+
     f.render_widget(input_par, layout[1]);
 }
