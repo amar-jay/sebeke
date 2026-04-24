@@ -1,7 +1,13 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow};
 use futures::Future;
+use moka::sync::Cache;
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::info;
 use zenoh::{bytes::Encoding, config::WhatAmI};
@@ -12,7 +18,7 @@ pub struct Node {
 
 impl Node {
     pub async fn new() -> Self {
-        let mut config = zenoh::Config::default();
+        let config = zenoh::Config::default();
 
         let session = Arc::new(zenoh::open(config).await.unwrap());
         let node = Self {
@@ -138,6 +144,12 @@ impl Node {
     {
         let callback = Arc::new(callback);
         let ingress_topic = format!("{topic}/__ingress");
+        let seen = Arc::new(
+            Cache::builder()
+                .max_capacity(20_000)
+                .time_to_live(Duration::from_millis(500))
+                .build(),
+        );
 
         self.log(&format!("Subscriber loop started for: {:?}", topic));
 
@@ -150,6 +162,7 @@ impl Node {
 
             let liveliness = self.session.liveliness().declare_token(&topic_name).await;
             let callback = callback.clone();
+            let seen = seen.clone();
 
             tokio::spawn(async move {
                 // Keep liveliness alive as long as this loop runs
@@ -157,6 +170,17 @@ impl Node {
 
                 while let Ok(sample) = subscriber.recv_async().await {
                     let bytes = sample.payload().to_bytes();
+                    let topic = sample.key_expr().as_str();
+                    let canonical_topic = topic
+                        .strip_suffix("/__ingress")
+                        .unwrap_or(topic)
+                        .to_string();
+                    let fingerprint = Self::sample_fingerprint(&canonical_topic, bytes.as_ref());
+
+                    if seen.contains_key(&fingerprint) {
+                        continue;
+                    }
+                    seen.insert(fingerprint, ());
 
                     match Self::deserialize::<T>(&bytes, sample.encoding().clone()) {
                         Ok(msg) => (callback.as_ref())(msg).await,
@@ -188,5 +212,12 @@ impl Node {
 
         // self.log(&format!("Published message to {}", topic));
         Ok(())
+    }
+
+    fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        topic.hash(&mut hasher);
+        data.hash(&mut hasher);
+        hasher.finish()
     }
 }

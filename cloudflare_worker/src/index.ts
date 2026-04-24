@@ -8,6 +8,25 @@ export interface Env {
   EDGE_MACHINES: KVNamespace;
 }
 
+const DEDUPE_PREFIX = "dedupe:";
+const DEDUPE_TTL_SECONDS = 10;
+
+function dedupeKvKey(messageKey: string): string {
+  return `${DEDUPE_PREFIX}${messageKey}`;
+}
+
+async function computeMessageKey(topic: string, data: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  const hashBytes = new Uint8Array(digest);
+  let hashHex = "";
+
+  for (const byte of hashBytes) {
+    hashHex += byte.toString(16).padStart(2, "0");
+  }
+
+  return `${topic}:${hashHex}`;
+}
+
 interface PushPayload {
   machine_id: string;
   topic: string;
@@ -68,6 +87,19 @@ export  default {
         const payloadBuffer = await payloadField.arrayBuffer();
         const pushPayload = decode(new Uint8Array(payloadBuffer)) as PushPayload;
 
+        const messageKey = await computeMessageKey(pushPayload.topic, pushPayload.data);
+        const messageKvKey = dedupeKvKey(messageKey);
+        const seen = await env.EDGE_MACHINES.get(messageKvKey);
+
+        if (seen !== null) {
+          console.log(`Deduped repeated push for topic ${pushPayload.topic}`);
+          return new Response("OK", { status: 200 });
+        }
+
+        await env.EDGE_MACHINES.put(messageKvKey, "1", {
+          expirationTtl: DEDUPE_TTL_SECONDS,
+        });
+
         const pullPayload = [{
             topic: pushPayload.topic,
             data: pushPayload.data 
@@ -81,6 +113,8 @@ export  default {
         console.log(`Push request received on ${url.pathname} from ${machineId}`);
 
         for (const key of machineList.keys) {
+          if (key.name.startsWith(DEDUPE_PREFIX)) continue;
+
           // Don't send back to the initiator
           if (key.name === machineId) continue;
 

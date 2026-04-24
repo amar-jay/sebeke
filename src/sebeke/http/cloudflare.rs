@@ -1,4 +1,9 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    sync::Arc,
+    time::Duration,
+};
 use tracing::{error, info, warn};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -52,6 +57,10 @@ pub struct WorkerRelay {
 
     /// Holds the tunnel processes alive
     tunnels: Arc<DashMap<String, Tunnel>>,
+
+    /// Short-lived fingerprints of samples already considered for egress.
+    /// Prevents rebroadcast amplification when the same payload re-enters.
+    egress_seen: Arc<Cache<u64, ()>>,
 }
 
 impl WorkerRelay {
@@ -109,6 +118,12 @@ impl Relay for WorkerRelay {
                     .build(),
             ),
             tunnels: Arc::new(DashMap::new()),
+            egress_seen: Arc::new(
+                Cache::builder()
+                    .max_capacity(cfg.cache_max_cap)
+                    .time_to_live(Duration::from_secs(3))
+                    .build(),
+            ),
             cfg: cfg,
         }
     }
@@ -426,6 +441,7 @@ impl WorkerRelay {
         let workers = self.workers.clone();
         let client = self.client.clone();
         let topic_cache = self.topic_cache.clone();
+        let egress_seen = self.egress_seen.clone();
 
         tokio::spawn(async move {
             while let Ok(sample) = subscriber.recv_async().await {
@@ -434,6 +450,12 @@ impl WorkerRelay {
                     continue;
                 }
                 let data = sample.payload().to_bytes().into_owned();
+
+                let fingerprint = Self::sample_fingerprint(&topic, &data);
+                if egress_seen.contains_key(&fingerprint) {
+                    continue;
+                }
+                egress_seen.insert(fingerprint, ());
 
                 let targets =
                     Self::resolve_egress_targets(&topic, &proxy_registry, &workers, &topic_cache);
@@ -549,5 +571,12 @@ impl WorkerRelay {
             .with_context(|| format!("worker at {push_url} rejected push"))?;
 
         Ok(())
+    }
+
+    fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        topic.hash(&mut hasher);
+        data.hash(&mut hasher);
+        hasher.finish()
     }
 }
