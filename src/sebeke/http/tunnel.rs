@@ -12,12 +12,12 @@ pub struct Tunnel {
 
 /// Downloading and installation of cloudflared.
 impl Tunnel {
-		pub async fn install_cloudflared() -> Result<()> {
-		    if which::which("cloudflared").is_err() {
-		    		warn!("Not implemented yet! need to write the scripts first.");
-		    }
-				Ok(())
-		}
+    pub async fn install_cloudflared() -> Result<()> {
+        if which::which("cloudflared").is_err() {
+            warn!("Not implemented yet! need to write the scripts first.");
+        }
+        Ok(())
+    }
 
     fn ensure_cloudflared() -> Result<()> {
         if which::which("cloudflared").is_err() {
@@ -30,14 +30,10 @@ impl Tunnel {
     }
 }
 
-
 impl Tunnel {
     pub async fn stop(&mut self) -> anyhow::Result<()> {
         // Try graceful shutdown first
-        self._process
-            .kill()
-            .await
-            .ok(); // ignore error if already dead
+        self._process.kill().await.ok(); // ignore error if already dead
 
         // Wait to fully reap the process
         let _ = self._process.wait().await;
@@ -61,10 +57,7 @@ impl Tunnel {
             .spawn()
             .context("Failed to spawn `cloudflared`. Is it supported on this platform?")?;
 
-        let stderr = child
-            .stderr
-            .take()
-            .context("Failed to capture stderr")?;
+        let stderr = child.stderr.take().context("Failed to capture stderr")?;
 
         let mut reader = BufReader::new(stderr).lines();
         let re = Regex::new(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")?;
@@ -85,9 +78,7 @@ impl Tunnel {
         }
 
         // Drain logs in background
-        tokio::spawn(async move {
-            while let Ok(Some(_)) = reader.next_line().await {}
-        });
+        tokio::spawn(async move { while let Ok(Some(_)) = reader.next_line().await {} });
 
         Ok(Self {
             _process: child,

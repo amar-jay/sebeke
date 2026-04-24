@@ -173,15 +173,15 @@ enum AppEvent {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt()
-      .with_max_level(tracing::Level::INFO)
-      .init();
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
     // --- Infrastructure setup ---
 
     let node = Arc::new(Node::new().await);
     let relay = WorkerRelay::new(node.session.clone(), WorkerRelay::get_default_config());
     let port = std::env::var("PORT").unwrap_or_else(|_| "8787".to_string());
-		println!("Starting relay and binding worker on port {}...", port);
+    println!("Starting relay and binding worker on port {}...", port);
     let local_address = format!("0.0.0.0:{}", port);
     let own_id = node.get_id().await?;
 
@@ -199,9 +199,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     relay.register_proxy(TOPIC, &format!("{}/", WORKER_URL))?;
-		tokio::spawn(async move {
-		    relay.listen().await.expect("Relay server failed");
-		});
+    tokio::spawn(async move {
+        relay.listen().await.expect("Relay server failed");
+    });
 
     // --- Event channel ---
 
@@ -483,7 +483,7 @@ fn render_input(f: &mut Frame, app: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-/// Format 
+/// Format
 /// messages:
 ///   `[14:32]  you  ›  hey there`  (cyan name)
 ///   `[14:31]  alice  ›  hello`     (yellow name)
