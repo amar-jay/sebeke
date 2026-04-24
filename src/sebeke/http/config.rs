@@ -64,7 +64,7 @@ pub struct CloudflareConfig {
     pub push_path: String,
     pub pull_path: String,
     pub local_address: String,
-    pub ingress_url: String,
+    // pub ingress_url: String, is this really needed? can't we just use the local_address for callbacks?
 }
 
 impl Default for CloudflareConfig {
@@ -79,7 +79,7 @@ impl Default for CloudflareConfig {
             push_path: "/push".to_string(),
             pull_path: "/pull".to_string(),
             local_address: "0.0.0.0:8787".to_string(),
-            ingress_url: "http://localhost:8787".to_string(),
+            // ingress_url: "http://localhost:8787".to_string(),
         }
     }
 }

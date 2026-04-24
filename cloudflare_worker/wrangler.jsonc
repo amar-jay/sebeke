@@ -13,6 +13,12 @@
 	"upload_source_maps": true,
 	"compatibility_flags": [
 		"nodejs_compat"
+	],
+	"kv_namespaces": [
+		{
+			"binding": "EDGE_MACHINES",
+			"id": "eb70db3b369a4ce2ac524d20760cab4e"
+		}
 	]
 	/**
 	 * Smart Placement

@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap();
 
     // 4. Start the background listeners for Egress push and Ingress pull/webhooks
-    println!("📡 Starting worker multiplexer listener...");
+    println!("Starting worker multiplexer listener...");
     workerd.listen().await.unwrap();
 
     // Give listeners a brief moment to boot
@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
     // 5. Publish Telemetry via Zenoh
     let message = "Test IMU Vector Data X=0 Y=1 Z=0";
     println!(
-        "🚀 Publishing simulated payload to Zenoh topic '{}' -> {}",
+        "Publishing simulated payload to Zenoh topic '{}' -> {}",
         TOPIC, message
     );
 
@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
     sleep(Duration::from_secs(2)).await;
 
     // 7. Verify the cloudflare end received it successfully via the GET/Test API
-    println!("🔍 Polling Cloudflare Worker to verify edge telemetry arrived...");
+    println!("Polling Cloudflare Worker to verify edge telemetry arrived...");
     let reqwest_client = reqwest::Client::new();
     let get_resp = reqwest_client
         .get(&format!("{}/data?topic={}", WORKER_URL, TOPIC))
@@ -83,10 +83,10 @@ async fn main() -> anyhow::Result<()> {
 
     if get_resp.status().is_success() {
         let result = get_resp.text().await?;
-        println!("✅ Test Passed! Cloudflare responded: \n{}", result);
+        println!("Test Passed! Cloudflare responded: \n{}", result);
     } else {
         println!(
-            "❌ Test Failed! Worker responded: \n{}",
+            "Test Failed! Worker responded: \n{}",
             get_resp.text().await?
         );
     }

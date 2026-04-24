@@ -172,14 +172,18 @@ enum AppEvent {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    tracing_subscriber::fmt()
+      .with_max_level(tracing::Level::INFO)
+      .init();
+
     // --- Infrastructure setup ---
 
     let node = Arc::new(Node::new().await);
     let relay = WorkerRelay::new(node.session.clone(), WorkerRelay::get_default_config());
     let port = std::env::var("PORT").unwrap_or_else(|_| "8787".to_string());
+		println!("Starting relay and binding worker on port {}...", port);
     let local_address = format!("0.0.0.0:{}", port);
-    let ingress_url = std::env::var("INGRESS_URL").unwrap_or_else(|_| format!("http://localhost:{}", port));
-    let own_id = std::env::var("OWN_ID").unwrap_or_else(|_| "tui-node-01".to_string());
+    let own_id = node.get_id().await?;
 
     relay
         .bind_worker(
@@ -187,16 +191,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
             config::WorkerConfig::Cloudflare(config::CloudflareConfig {
                 api_token: "local-dev-token".to_owned(),
                 machine_id: own_id.clone(),
-                push_path: "/".to_owned(),
+                push_path: "/bind/cloud/outbound/test".to_owned(),
                 local_address,
-                ingress_url,
                 ..Default::default()
             }),
         )
         .await?;
 
     relay.register_proxy(TOPIC, &format!("{}/", WORKER_URL))?;
-    relay.listen().await?;
+		tokio::spawn(async move {
+		    relay.listen().await.expect("Relay server failed");
+		});
 
     // --- Event channel ---
 
@@ -478,16 +483,9 @@ fn render_input(f: &mut Frame, app: &AppState, area: Rect) {
     f.render_widget(paragraph, area);
 }
 
-// ---------------------------------------------------------------------------
-// Message formatting
-// ---------------------------------------------------------------------------
-
-/// Formats a single `ChatMessage` as a styled `ListItem`.
-///
-/// Own messages:
+/// Format 
+/// messages:
 ///   `[14:32]  you  ›  hey there`  (cyan name)
-///
-/// Others:
 ///   `[14:31]  alice  ›  hello`     (yellow name)
 fn build_list_item<'a>(msg: &'a ChatMessage, own_id: &str) -> ListItem<'a> {
     let is_own = msg.from == own_id;

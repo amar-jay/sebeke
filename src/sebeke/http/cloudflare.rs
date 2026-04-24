@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, fmt::format, sync::Arc, time::Duration};
 use tracing::{error, info, warn};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -7,7 +7,7 @@ use moka::sync::Cache;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use zenoh::{Session, bytes::Encoding};
 
-use crate::http::config::{CloudflareConfig, RelayConfig};
+use crate::http::{config::{CloudflareConfig, RelayConfig}, tunnel::Tunnel};
 
 use super::config::{Relay, WorkerConfig};
 use async_trait::async_trait;
@@ -22,22 +22,31 @@ use reqwest::multipart;
 #[derive(Debug, Clone, Serialize)]
 struct BindPayload<'a> {
     machine_id: &'a str,
-    ingress_url: &'a str,
+		ingress_url: &'a str, // The public URL of our tunnel that the worker should send requests to
+		ttl_ms: Option<u64>, // Optional TTL for this binding, if the worker supports it
 }
 
 pub struct WorkerRelay {
     /// The active Zenoh session
     session: Arc<Session>,
 
+		cfg: RelayConfig,
+
     /// The HTTP client used to dispatch data to available workers
     client: reqwest::Client,
 
+		/// The proxy registry: maps local topic patterns (e.g. "sensors/**") to a list of worker URL patterns (e.g. "https://aa.your-cloudflare-worker.com/robotica/**")
     proxy_registry: Arc<DashMap<String, Vec<String>>>,
+
+		/// the key of worker base url e.g. "https://aa.your-cloudflare-worker.com/robotica/" with value of the worker's config
     workers: Arc<DashMap<String, WorkerConfig>>,
 
     /// Memoizes egress target resolution per concrete topic.
     /// Invalidated whenever the worker or proxy registry changes.
     topic_cache: Arc<Cache<String, Vec<(String, CloudflareConfig)>>>,
+
+    /// Holds the tunnel processes alive
+    tunnels: Arc<DashMap<String, Tunnel>>,
 }
 
 impl WorkerRelay {
@@ -70,18 +79,11 @@ impl WorkerRelay {
 impl Relay for WorkerRelay {
     fn new(session: Arc<Session>, cfg: RelayConfig) -> WorkerRelay {
         let default = Self::get_default_config();
+				let cfg = RelayConfig {
+						cache_max_cap: if cfg.cache_max_cap == 0 { default.cache_max_cap } else { cfg.cache_max_cap },
+						cache_ttl: if cfg.cache_ttl.is_zero() { default.cache_ttl } else { cfg.cache_ttl },
+				};
 
-        // Determine values once
-        let max_cap = if cfg.cache_max_cap == 0 {
-            default.cache_max_cap
-        } else {
-            cfg.cache_max_cap
-        };
-        let ttl = if cfg.cache_ttl.is_zero() {
-            default.cache_ttl
-        } else {
-            cfg.cache_ttl
-        };
         Self {
             session,
             client: reqwest::Client::new(),
@@ -89,10 +91,12 @@ impl Relay for WorkerRelay {
             workers: Arc::new(DashMap::new()),
             topic_cache: Arc::new(
                 Cache::builder()
-                    .max_capacity(max_cap)
-                    .time_to_idle(ttl)
+                    .max_capacity(cfg.cache_max_cap)
+                    .time_to_idle(cfg.cache_ttl)
                     .build(),
             ),
+						tunnels: Arc::new(DashMap::new()),
+						cfg: cfg,
         }
     }
 
@@ -122,45 +126,49 @@ impl Relay for WorkerRelay {
             .collect()
     }
 
-    async fn bind_worker(&self, base_url: &str, config: WorkerConfig) -> Result<()> {
-        let cfg = match &config {
-            WorkerConfig::Cloudflare(c) => c,
-            _ => bail!("bind_worker only supports Cloudflare configs"),
-        };
+		async fn bind_worker(&self, base_url: &str, config: WorkerConfig) -> Result<()> {
+		    let cfg = match &config {
+		        WorkerConfig::Cloudflare(c) => c,
+		        _ => bail!("bind_worker only supports Cloudflare configs"),
+		    };
 
-        if cfg.api_token.is_empty() {
-            bail!("Cloudflare api_token cannot be empty");
-        }
-        if cfg.machine_id.is_empty() {
-            bail!("Cloudflare machine_id cannot be empty");
-        }
+		    // Extract the port from local_address (e.g., "0.0.0.0:8787" -> 8787)
+		    let port: u16 = cfg.local_address.split(':').last()
+		        .unwrap_or("8787").parse().unwrap_or(8787);
 
-        let mut ingress_url = cfg.ingress_url.clone();
-        if ingress_url.is_empty() {
-            ingress_url = format!("http://{}", cfg.local_address);
-        }
+		    // make sure to start the tunnel first and get our dynamic public URL
+		    let tunnel = Tunnel::start(port).await?;
+		    let ingress_url = tunnel.public_url.clone();
 
-        self.client
-            .post(format!("{}{}", base_url, cfg.bind_path))
-            .bearer_auth(&cfg.api_token)
-            .timeout(Duration::from_millis(cfg.request_timeout_ms))
-            .json(&BindPayload {
-                machine_id: &cfg.machine_id,
-                ingress_url: &ingress_url,
-            })
-            .send()
-            .await
-            .context("failed to reach Cloudflare worker during bind")?
-            .error_for_status()
-            .context("Cloudflare worker rejected bind request")?;
+		    // Stash the tunnel so it stays alive
+		    self.tunnels.insert(cfg.machine_id.clone(), tunnel);
 
-        self.workers.insert(base_url.to_string(), config);
-        // A new worker may be a valid target for cached topics
-        self.topic_cache.invalidate_all();
+		    // Now bind with the cloudflare worker, providing our public URL
+		    self.client
+		        .post(format!("{}{}", base_url, cfg.bind_path))
+		        .bearer_auth(&cfg.api_token)
+		        .timeout(Duration::from_millis(cfg.request_timeout_ms))
+		        .json(&BindPayload {
+		            machine_id: &cfg.machine_id,
+		            ingress_url: &ingress_url, 
+								ttl_ms: Some(self.cfg.cache_ttl.as_millis() as u64), 
+		        })
+		        .send()
+		        .await
+		        .context("failed to reach Cloudflare worker during bind")?
+		        .error_for_status()
+		        .context("Cloudflare worker rejected bind request")?;
 
-        info!(base_url, "worker bound");
-        Ok(())
-    }
+		    self.workers.insert(base_url.to_string(), config);
+		    self.topic_cache.invalidate_all();
+
+		    info!(base_url, ingress_url, "worker bound and tunneled");
+		    Ok(())
+		}
+
+
+
+
     async fn unbind_worker(&self, base_url: &str) -> Result<()> {
         // Atomically remove so there is no window where the worker is absent
         // from the map but has not yet been told to unbind
@@ -169,29 +177,28 @@ impl Relay for WorkerRelay {
             .remove(base_url)
             .ok_or_else(|| anyhow!("no active worker for: {base_url}"))?;
 
-        self.topic_cache.invalidate_all();
-
         if let WorkerConfig::Cloudflare(cfg) = binding {
-            let mut ingress_url = cfg.ingress_url.clone();
-            if ingress_url.is_empty() {
-                ingress_url = format!("http://{}", cfg.local_address);
-            }
-
+						let (_, mut tunnel) = self.tunnels.remove(&cfg.machine_id).ok_or_else(|| anyhow!("no active tunnel for worker: {base_url}"))?;
             self.client
                 .post(format!("{}{}", base_url, cfg.unbind_path))
                 .bearer_auth(&cfg.api_token)
                 .timeout(Duration::from_millis(cfg.request_timeout_ms.max(500)))
                 .json(&BindPayload {
                     machine_id: &cfg.machine_id,
-                    ingress_url: &ingress_url,
+										ingress_url: &tunnel.public_url,
+										ttl_ms: None, 
                 })
                 .send()
                 .await
                 .context("failed to reach Cloudflare worker during unbind")?
                 .error_for_status()
                 .context("Cloudflare worker rejected unbind request")?;
+						tunnel.stop().await?;
+				} else {
+						bail!("unbind_worker only supports Cloudflare configs");
         }
 
+        self.topic_cache.invalidate_all();
         info!(base_url, "worker unbound");
         Ok(())
     }
@@ -248,7 +255,7 @@ impl WorkerRelay {
         }
 
         if by_address.is_empty() {
-            bail!("listen() called with no Cloudflare workers bound");
+            warn!("listen() called with no Cloudflare workers bound");
         }
 
         for (local_address, cfgs) in by_address {
@@ -302,7 +309,7 @@ impl WorkerRelay {
         while let Ok(Some(field)) = multipart.next_field().await {
             match field.name().unwrap_or_default() {
                 "payload" => {
-                    any_payload_ok = Self::ingest_payload_field(field, &session).await; // does this overwrite if so use |=
+                    any_payload_ok |= Self::ingest_payload_field(field, &session).await; // does this overwrite if so use |=
                 }
                 "media" => {
                     Self::ingest_media_field(field, &session).await;
@@ -347,10 +354,12 @@ impl WorkerRelay {
 
         let mut all_ok = true;
         for p in payloads {
-            if let Err(e) = session.put(p.topic.clone(), p.data).await {
-                error!(topic = %p.topic, error = %e, "session.put failed");
-                all_ok = false;
-            }
+					if let Err(e) = session.put(p.topic.clone(), p.data).await {
+					    error!(topic = %p.topic, error = %e, "session.put failed");
+							all_ok = false;
+					} else {
+					    info!(topic = %p.topic, "Successfully injected into Zenoh!"); // Add this
+					}
         }
         all_ok
     }
@@ -454,7 +463,10 @@ impl WorkerRelay {
                     let base_url = worker_entry.key();
                     if resolved_url.starts_with(base_url.as_str()) {
                         if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
-                            let push_url = format!("{}{}", base_url, cfg.push_path);
+														let push_path = if cfg.push_path.starts_with('/') {
+															format!("@{}", cfg.push_path) // rewrite prefix to avoid double slash
+														} else { format!("/{}", cfg.push_path) };
+                            let push_url = format!("{}{}{}", base_url, cfg.bind_path, push_path);
                             matched.push((push_url, cfg.clone()));
                         }
                     }
@@ -500,10 +512,10 @@ impl WorkerRelay {
             .timeout(Duration::from_millis(cfg.request_timeout_ms))
             .multipart(form)
             .send()
-            .await
-            .with_context(|| format!("failed to reach worker at {push_url}"))?
-            .error_for_status()
-            .with_context(|| format!("worker at {push_url} rejected push"))?;
+            .await?;
+            // .with_context(|| format!("failed to reach worker at {push_url}"))?
+            // .error_for_status()
+            // .with_context(|| format!("worker at {push_url} rejected push"))?;
 
         Ok(())
     }

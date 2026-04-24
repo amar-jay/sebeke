@@ -11,16 +11,35 @@ pub struct Node {
 
 impl Node {
     pub async fn new() -> Self {
-        let session = Arc::new(zenoh::open(zenoh::Config::default()).await.unwrap());
+        let is_isolated = std::env::var("ISOLATED").unwrap_or_default() == "1";
+        let mut config = zenoh::Config::default();
+        
+        if is_isolated {
+            // Disable local peer discovery and endpoints so Zenoh is forced to be isolated
+            config.insert_json5("scouting/multicast/enabled", "false").unwrap();
+            // config.insert_json5("listen/endpoints", "[]").unwrap();
+            // config.insert_json5("connect/endpoints", "[]").unwrap();
+        }
+
+        let session = Arc::new(zenoh::open(config).await.unwrap());
         let node = Self {
             session: session.clone(),
         };
         node.log(&format!(
-            "Session established: {:?}",
+            "Session established (isolated={}, ZID={:?})",
+            is_isolated,
             session.info().zid().await
         ));
         node
     }
+
+		pub async fn close(&self) -> Result<()> {
+				self.session.close().await.map_err(|e| anyhow!("Failed to close session: {}", e))
+		}
+
+		pub async fn get_id(&self) -> Result<String> {
+				Ok(self.session.info().zid().await.to_string())
+		}
 
     pub fn log(&self, message: &str) {
         // Just print, could use futures for reading the runtime zid but keeping it simple

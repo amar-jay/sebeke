@@ -10,10 +10,13 @@ description = "Distributed serverless-first infrastructure for robotics"
 name = "sebeke"
 path = "src/sebeke/lib.rs"
 
+[features]
+process = []
+
 [dependencies]
 # Backbone & Transport
 zenoh = "1.8.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "rt", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 
 # Serialization (CBOR for inter-node, JSON for Zenoh/Cloud interop)
 serde = { version = "1.0", features = ["derive"] }
@@ -44,7 +47,8 @@ moka = { version = "0.12.15", features = ["sync"] }
 ratatui = "0.30.0"
 crossterm = "0.29.0"
 tracing = "0.1.44"
-
+which = "8.0.2"
+tracing-subscriber = "0.3.23"
 
 [dev-dependencies]
 # Moved teloxide here as it's currently for illustration
