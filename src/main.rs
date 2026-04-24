@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let session = zenoh::open(zenoh::Config::default()).await.unwrap();
     let session = Arc::new(session);
 
-    let workerd = WorkerRelay::new(session.clone(), WorkerRelay::get_default_config());
+    let workerd = Arc::new(WorkerRelay::new(session.clone(), WorkerRelay::get_default_config()));
 
     // 2. Bind the Cloudflare Worker to the Edge process
     println!(
@@ -51,7 +51,13 @@ async fn main() -> anyhow::Result<()> {
 
     // 4. Start the background listeners for Egress push and Ingress pull/webhooks
     println!("Starting worker multiplexer listener...");
-    workerd.listen().await.unwrap();
+    let workerd_listener = workerd.clone();
+    tokio::spawn(async move {
+        workerd_listener
+            .listen()
+            .await
+            .expect("Relay server failed");
+    });
 
     // Give listeners a brief moment to boot
     sleep(Duration::from_millis(500)).await;

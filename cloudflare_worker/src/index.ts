@@ -23,6 +23,7 @@ interface BindPayload {
 export  default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    console.log(`Worker received ${request.method} ${url.pathname}`);
 
     // --- BIND ENDPOINT ---
     if (request.method === "POST" && url.pathname === "/bind") {
@@ -54,7 +55,7 @@ export  default {
     }
 
     // --- BROADCAST / PUSH ENDPOINT ---
-    if (request.method === "POST" && url.pathname === "/") {
+    if (request.method === "POST") {
       try {
         const formData = await request.formData();
         const machineId = formData.get("machine_id") as string;
@@ -76,7 +77,8 @@ export  default {
         // Fetch ALL registered machines from KV
         const machineList = await env.EDGE_MACHINES.list();
         const promises: Promise<any>[] = [];
-				console.log("machineList:", machineList.keys.map(k => k.name));
+        console.log("machineList:", machineList.keys.map(k => k.name));
+        console.log(`Push request received on ${url.pathname} from ${machineId}`);
 
         for (const key of machineList.keys) {
           // Don't send back to the initiator
@@ -100,7 +102,16 @@ export  default {
             fetch(destUrl, {
               method: 'POST',
               body: outFormData,
-            }).catch(e => console.error(`Failed to push to ${destUrl}:`, e))
+            })
+              .then(async (resp) => {
+                if (!resp.ok) {
+                  const body = await resp.text();
+                  console.error(`Ingress delivery failed ${resp.status} ${resp.statusText} for ${destUrl}: ${body}`);
+                } else {
+                  console.log(`Ingress delivery ok for ${destUrl}`);
+                }
+              })
+              .catch(e => console.error(`Failed to push to ${destUrl}:`, e))
           );
         }
 
@@ -110,7 +121,7 @@ export  default {
         return new Response("OK", { status: 200 });
 
       } catch (e) {
-        console.error("Broadcast failed:", e);
+        console.error(`Broadcast failed for ${url.pathname}:`, e);
         return new Response("Internal Server Error", { status: 500 });
       }
     }

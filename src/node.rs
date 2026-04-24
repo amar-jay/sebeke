@@ -3,6 +3,7 @@ use std::{collections::HashSet, sync::Arc, time::Duration};
 use anyhow::{Result, anyhow};
 use futures::Future;
 use serde::{Serialize, de::DeserializeOwned};
+use tracing::info;
 use zenoh::{bytes::Encoding, config::WhatAmI};
 
 pub struct Node {
@@ -11,25 +12,14 @@ pub struct Node {
 
 impl Node {
     pub async fn new() -> Self {
-        let is_isolated = std::env::var("ISOLATED").unwrap_or_default() == "1";
         let mut config = zenoh::Config::default();
-
-        if is_isolated {
-            // Disable local peer discovery and endpoints so Zenoh is forced to be isolated
-            config
-                .insert_json5("scouting/multicast/enabled", "false")
-                .unwrap();
-            // config.insert_json5("listen/endpoints", "[]").unwrap();
-            // config.insert_json5("connect/endpoints", "[]").unwrap();
-        }
 
         let session = Arc::new(zenoh::open(config).await.unwrap());
         let node = Self {
             session: session.clone(),
         };
         node.log(&format!(
-            "Session established (isolated={}, ZID={:?})",
-            is_isolated,
+            "Session established (ZID={:?})",
             session.info().zid().await
         ));
         node
@@ -48,7 +38,7 @@ impl Node {
 
     pub fn log(&self, message: &str) {
         // Just print, could use futures for reading the runtime zid but keeping it simple
-        println!("[Node] {}", message);
+        info!("[Node] {}", message);
     }
 
     pub async fn probe(timeout: Duration) -> bool {
@@ -146,37 +136,42 @@ impl Node {
         F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let subscriber = self
-            .session
-            .declare_subscriber(topic)
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to {}: {}", topic, e))?;
-
-        // Declare liveliness token so other nodes can discover this topic
-        let liveliness = self.session.liveliness().declare_token(topic).await;
+        let callback = Arc::new(callback);
+        let ingress_topic = format!("{topic}/__ingress");
 
         self.log(&format!("Subscriber loop started for: {:?}", topic));
 
-        tokio::spawn(async move {
-            // Keep liveliness alive as long as this loop runs
-            let _keep_alive = liveliness;
+        for topic_name in [topic.to_string(), ingress_topic] {
+            let subscriber = self
+                .session
+                .declare_subscriber(&topic_name)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to subscribe to {}: {}", topic_name, e))?;
 
-            while let Ok(sample) = subscriber.recv_async().await {
-                let bytes = sample.payload().to_bytes();
+            let liveliness = self.session.liveliness().declare_token(&topic_name).await;
+            let callback = callback.clone();
 
-                match Self::deserialize::<T>(&bytes, sample.encoding().clone()) {
-                    Ok(msg) => callback(msg).await,
-                    Err(e) => {
-                        println!(
-                            "DROPPED: Malformed packet on topic '{}' ({:?}). {}",
-                            sample.key_expr(),
-                            sample.encoding(),
-                            e
-                        );
+            tokio::spawn(async move {
+                // Keep liveliness alive as long as this loop runs
+                let _keep_alive = liveliness;
+
+                while let Ok(sample) = subscriber.recv_async().await {
+                    let bytes = sample.payload().to_bytes();
+
+                    match Self::deserialize::<T>(&bytes, sample.encoding().clone()) {
+                        Ok(msg) => (callback.as_ref())(msg).await,
+                        Err(e) => {
+                            println!(
+                                "DROPPED: Malformed packet on topic '{}' ({:?}). {}",
+                                sample.key_expr(),
+                                sample.encoding(),
+                                e
+                            );
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(())
     }
@@ -191,7 +186,7 @@ impl Node {
             .await
             .map_err(|e| anyhow::anyhow!("Zenoh publish error on topic '{}': {}", topic, e))?;
 
-        self.log(&format!("Published message to {}", topic));
+        // self.log(&format!("Published message to {}", topic));
         Ok(())
     }
 }

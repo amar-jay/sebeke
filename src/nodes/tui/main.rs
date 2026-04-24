@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // --- Infrastructure setup ---
 
     let node = Arc::new(Node::new().await);
-    let relay = WorkerRelay::new(node.session.clone(), WorkerRelay::get_default_config());
+    let relay = Arc::new(WorkerRelay::new(node.session.clone(), WorkerRelay::get_default_config()));
     let port = std::env::var("PORT").unwrap_or_else(|_| "8787".to_string());
     println!("Starting relay and binding worker on port {}...", port);
     let local_address = format!("0.0.0.0:{}", port);
@@ -191,7 +191,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             config::WorkerConfig::Cloudflare(config::CloudflareConfig {
                 api_token: "local-dev-token".to_owned(),
                 machine_id: own_id.clone(),
-                push_path: "/bind/cloud/outbound/test".to_owned(),
+                push_path: "/".to_owned(),
                 local_address,
                 ..Default::default()
             }),
@@ -199,8 +199,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     relay.register_proxy(TOPIC, &format!("{}/", WORKER_URL))?;
+    let relay_listener = relay.clone();
     tokio::spawn(async move {
-        relay.listen().await.expect("Relay server failed");
+        relay_listener.listen().await.expect("Relay server failed");
     });
 
     // --- Event channel ---

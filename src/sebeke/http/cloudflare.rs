@@ -22,6 +22,8 @@ use axum::{
 };
 use reqwest::multipart;
 
+const INGESTED_TOPIC_SUFFIX: &str = "/__ingress";
+
 #[derive(Debug, Clone, Serialize)]
 struct BindPayload<'a> {
     machine_id: &'a str,
@@ -153,7 +155,7 @@ impl Relay for WorkerRelay {
             .unwrap_or(8787);
 
         // make sure to start the tunnel first and get our dynamic public URL
-        let tunnel = Tunnel::start(port).await?;
+        let tunnel = Tunnel::start(port, "http2").await?;
         let ingress_url = tunnel.public_url.clone();
 
         // Stash the tunnel so it stays alive
@@ -298,14 +300,15 @@ impl WorkerRelay {
         Ok(())
     }
 
-    /// Builds an Axum `Router` with one POST route per Cloudflare config's
-    /// `bind_path`. All routes share the same Zenoh session via Axum state.
+    /// Builds an Axum `Router` with POST routes for Cloudflare callbacks.
+    /// All routes share the same Zenoh session via Axum state.
     fn build_ingress_router(cfgs: &[CloudflareConfig], session: Arc<Session>) -> Router {
         let mut router = Router::new();
 
         for cfg in cfgs {
-            info!(bind_path = %cfg.bind_path, "registering ingress route");
+            info!(bind_path = %cfg.bind_path, pull_path = %cfg.pull_path, "registering ingress routes");
             router = router.route(&cfg.bind_path, post(Self::handle_pull_request));
+            router = router.route(&cfg.pull_path, post(Self::handle_pull_request));
         }
 
         router.with_state(session)
@@ -322,10 +325,19 @@ impl WorkerRelay {
     ) -> StatusCode {
         let mut any_payload_ok = false;
 
-        while let Ok(Some(field)) = multipart.next_field().await {
+        loop {
+            let field = match multipart.next_field().await {
+                Ok(Some(field)) => field,
+                Ok(None) => break,
+                Err(e) => {
+                    error!(error = %e, "failed to parse multipart payload");
+                    return StatusCode::BAD_REQUEST;
+                }
+            };
+
             match field.name().unwrap_or_default() {
                 "payload" => {
-                    any_payload_ok |= Self::ingest_payload_field(field, &session).await; // does this overwrite if so use |=
+                    any_payload_ok |= Self::ingest_payload_field(field, &session).await;
                 }
                 "media" => {
                     Self::ingest_media_field(field, &session).await;
@@ -370,11 +382,14 @@ impl WorkerRelay {
 
         let mut all_ok = true;
         for p in payloads {
-            if let Err(e) = session.put(p.topic.clone(), p.data).await {
+            let ingested_topic = format!("{}{}", p.topic, INGESTED_TOPIC_SUFFIX);
+            if let Err(e) = session
+                .put(ingested_topic, p.data)
+                .encoding(Encoding::APPLICATION_CBOR)
+                .await
+            {
                 error!(topic = %p.topic, error = %e, "session.put failed");
                 all_ok = false;
-            } else {
-                info!(topic = %p.topic, "Successfully injected into Zenoh!"); // Add this
             }
         }
         all_ok
@@ -415,6 +430,9 @@ impl WorkerRelay {
         tokio::spawn(async move {
             while let Ok(sample) = subscriber.recv_async().await {
                 let topic = sample.key_expr().as_str().to_string();
+                if topic.ends_with(INGESTED_TOPIC_SUFFIX) {
+                    continue;
+                }
                 let data = sample.payload().to_bytes().into_owned();
 
                 let targets =
@@ -428,10 +446,10 @@ impl WorkerRelay {
                     match Self::push_to_cloudflare(&client, &push_url, &cfg, &topic, data.clone())
                         .await
                     {
-                        Ok(()) => info!(url = %push_url, topic = %topic, "egress push ok"),
                         Err(e) => {
                             error!(url = %push_url, topic = %topic, error = %e, "egress push failed")
                         }
+												_ => (),
                     }
                 }
             }
@@ -479,12 +497,7 @@ impl WorkerRelay {
                     let base_url = worker_entry.key();
                     if resolved_url.starts_with(base_url.as_str()) {
                         if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
-                            let push_path = if cfg.push_path.starts_with('/') {
-                                format!("@{}", cfg.push_path) // rewrite prefix to avoid double slash
-                            } else {
-                                format!("/{}", cfg.push_path)
-                            };
-                            let push_url = format!("{}{}{}", base_url, cfg.bind_path, push_path);
+                            let push_url = format!("{}{}", base_url, cfg.push_path);
                             matched.push((push_url, cfg.clone()));
                         }
                     }
@@ -530,10 +543,10 @@ impl WorkerRelay {
             .timeout(Duration::from_millis(cfg.request_timeout_ms))
             .multipart(form)
             .send()
-            .await?;
-        // .with_context(|| format!("failed to reach worker at {push_url}"))?
-        // .error_for_status()
-        // .with_context(|| format!("worker at {push_url} rejected push"))?;
+            .await
+            .with_context(|| format!("failed to reach worker at {push_url}"))?
+            .error_for_status()
+            .with_context(|| format!("worker at {push_url} rejected push"))?;
 
         Ok(())
     }
