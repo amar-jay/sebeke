@@ -19,7 +19,7 @@ async fn main() -> anyhow::Result<()> {
     let session = zenoh::open(zenoh::Config::default()).await.unwrap();
     let session = Arc::new(session);
 
-    let workerd = WorkerRelay::new(session.clone());
+    let workerd = WorkerRelay::new(session.clone(), WorkerRelay::get_default_config());
 
     // 2. Bind the Cloudflare Worker to the Edge process
     println!(

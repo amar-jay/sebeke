@@ -43,6 +43,7 @@ multer = "3.1.0"
 moka = { version = "0.12.15", features = ["sync"] }
 ratatui = "0.30.0"
 crossterm = "0.29.0"
+tracing = "0.1.44"
 
 
 [dev-dependencies]

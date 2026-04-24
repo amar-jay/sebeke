@@ -2,13 +2,20 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use zenoh::Session;
 
 use super::config;
 
 #[async_trait]
 pub trait Relay: Send + Sync {
-    fn new(session: Arc<Session>) -> Self
+    fn get_default_config() -> RelayConfig {
+        RelayConfig {
+            cache_max_cap: 10_000,
+            cache_ttl: Duration::from_secs(5 * 60),
+        }
+    }
+    fn new(session: Arc<Session>, cfg: RelayConfig) -> Self
     where
         Self: Sized;
 
@@ -34,6 +41,11 @@ pub trait Relay: Send + Sync {
     async fn listen(&self) -> Result<()>;
 }
 
+pub struct RelayConfig {
+    pub cache_max_cap: u64,
+    pub cache_ttl: Duration,
+}
+
 #[derive(Clone, Debug)]
 pub enum WorkerConfig {
     Cloudflare(CloudflareConfig),
@@ -51,6 +63,8 @@ pub struct CloudflareConfig {
     pub unbind_path: String,
     pub push_path: String,
     pub pull_path: String,
+    pub local_address: String,
+    pub ingress_url: String,
 }
 
 impl Default for CloudflareConfig {
@@ -64,6 +78,8 @@ impl Default for CloudflareConfig {
             unbind_path: "/unbind".to_string(),
             push_path: "/push".to_string(),
             pull_path: "/pull".to_string(),
+            local_address: "0.0.0.0:8787".to_string(),
+            ingress_url: "http://localhost:8787".to_string(),
         }
     }
 }

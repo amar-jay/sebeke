@@ -2,9 +2,9 @@ use regex::Regex;
 
 #[derive(Debug)]
 pub enum ResolverError {
-    NoMatch(String),
-    InvalidPattern(String),
-    NonCanonicalPath(String),
+    NoMatch,
+    InvalidPattern,
+    NonCanonicalPath,
 }
 
 /// Validates Zenoh canonization.
@@ -47,11 +47,11 @@ pub fn resolve_zenoh_url(
 ) -> Result<String, ResolverError> {
     // 1. Strict Canonization Check (The "Effective" Part)
     if !is_canonical(topic) {
-        return Err(ResolverError::NonCanonicalPath(topic.to_string()));
+        return Err(ResolverError::NonCanonicalPath);
     }
 
     if !is_valid_zenoh(&local_pattern) {
-        return Err(ResolverError::InvalidPattern(local_pattern.to_string()));
+        return Err(ResolverError::InvalidPattern);
     }
 
     // 2. Prepare Regex with capturing groups
@@ -67,8 +67,7 @@ pub fn resolve_zenoh_url(
         .replace("___SINGLE___", r"([^/]+)")
         .replace("___FRAG___", r"([^/]*)");
 
-    let re = Regex::new(&format!("^{}$", pattern))
-        .map_err(|_| ResolverError::InvalidPattern(local_pattern.to_string()))?;
+    let re = Regex::new(&format!("^{}$", pattern)).map_err(|_| ResolverError::InvalidPattern)?;
 
     // 3. Match and Map
     if let Some(caps) = re.captures(topic) {
@@ -84,7 +83,7 @@ pub fn resolve_zenoh_url(
         return Ok(result);
     }
 
-    Err(ResolverError::NoMatch(topic.to_string()))
+    Err(ResolverError::NoMatch)
 }
 
 fn find_next_wildcard(s: &str) -> Option<(&'static str, usize)> {
@@ -166,7 +165,7 @@ mod tests {
     fn test_no_match_error() {
         let result = resolve_zenoh_url("a/b/c", "x/y/z", "a/b/d");
         match result {
-            Err(ResolverError::NoMatch(t)) => assert_eq!(t, "a/b/d"),
+            Err(ResolverError::NoMatch) => (),
             _ => panic!("Expected NoMatch error"),
         }
     }

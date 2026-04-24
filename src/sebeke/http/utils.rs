@@ -3,8 +3,27 @@ use regex::Regex;
 #[derive(Debug)]
 pub enum ResolverError {
     NoMatch(String),
-    InvalidPattern(String),
-    NonCanonicalPath(String),
+    InvalidPattern,
+    NonCanonicalPath,
+}
+
+impl std::fmt::Display for ResolverError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolverError::NoMatch(topic) => {
+                write!(f, "No matching pattern found for topic '{}'", topic)
+            }
+            ResolverError::InvalidPattern => {
+                write!(
+                    f,
+                    "Invalid local pattern provided (must follow Zenoh syntax)"
+                )
+            }
+            ResolverError::NonCanonicalPath => {
+                write!(f, "Topic is not in canonical form")
+            }
+        }
+    }
 }
 
 /// Validates Zenoh canonization.
@@ -47,11 +66,11 @@ pub fn resolve_zenoh_url(
 ) -> Result<String, ResolverError> {
     // 1. Strict Canonization Check (The "Effective" Part)
     if !is_canonical(topic) {
-        return Err(ResolverError::NonCanonicalPath(topic.to_string()));
+        return Err(ResolverError::NonCanonicalPath);
     }
 
     if !is_valid_zenoh(&local_pattern) {
-        return Err(ResolverError::InvalidPattern(local_pattern.to_string()));
+        return Err(ResolverError::InvalidPattern);
     }
 
     // 2. Prepare Regex with capturing groups
@@ -67,8 +86,7 @@ pub fn resolve_zenoh_url(
         .replace("___SINGLE___", r"([^/]+)")
         .replace("___FRAG___", r"([^/]*)");
 
-    let re = Regex::new(&format!("^{}$", pattern))
-        .map_err(|_| ResolverError::InvalidPattern(local_pattern.to_string()))?;
+    let re = Regex::new(&format!("^{}$", pattern)).map_err(|_| ResolverError::InvalidPattern)?;
 
     // 3. Match and Map
     if let Some(caps) = re.captures(topic) {
