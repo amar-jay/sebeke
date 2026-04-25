@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use zenoh::bytes::Encoding;
 
-use sebeke::http::{
+use sebeke::relay::{
     cloudflare::WorkerRelay,
     config::{self, Relay},
 };
@@ -19,7 +19,10 @@ async fn main() -> anyhow::Result<()> {
     let session = zenoh::open(zenoh::Config::default()).await.unwrap();
     let session = Arc::new(session);
 
-    let workerd = Arc::new(WorkerRelay::new(session.clone(), WorkerRelay::get_default_config()));
+    let workerd = Arc::new(WorkerRelay::new(
+        session.clone(),
+        WorkerRelay::get_default_config(),
+    ));
 
     // 2. Bind the Cloudflare Worker to the Edge process
     println!(

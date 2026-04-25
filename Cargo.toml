@@ -16,7 +16,7 @@ process = []
 [dependencies]
 # Backbone & Transport
 zenoh = "1.8.0"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process", "signal"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "process", "signal"] }
 
 # Serialization (CBOR for inter-node, JSON for Zenoh/Cloud interop)
 serde = { version = "1.0", features = ["derive"] }

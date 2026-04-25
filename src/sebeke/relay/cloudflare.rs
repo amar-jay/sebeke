@@ -16,7 +16,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
 use zenoh::{Session, bytes::Encoding};
 
-use crate::http::{
+use crate::relay::{
     config::{CloudflareConfig, RelayConfig},
     tunnel::Tunnel,
 };
@@ -98,17 +98,16 @@ impl WorkerRelay {
         }
     }
 
-    pub async fn attach_worker_ws_only(
-        &self,
-        base_url: &str,
-        cfg: CloudflareConfig,
-    ) -> Result<()> {
+    pub async fn attach_worker_ws_only(&self, base_url: &str, cfg: CloudflareConfig) -> Result<()> {
         self.workers
             .insert(base_url.to_string(), WorkerConfig::Cloudflare(cfg.clone()));
         self.start_worker_ws_client(base_url, cfg)?;
         self.topic_cache.invalidate_all();
 
-        info!(base_url, "worker attached in websocket-only mode (no bind/tunnel)");
+        info!(
+            base_url,
+            "worker attached in websocket-only mode (no bind/tunnel)"
+        );
         Ok(())
     }
 }
@@ -205,7 +204,8 @@ impl Relay for WorkerRelay {
         self.tunnels.insert(cfg.machine_id.clone(), tunnel);
 
         // Now bind with the cloudflare worker, providing our public URL
-        let bind_resp = self.client
+        let bind_resp = self
+            .client
             .post(format!("{}{}", base_url, cfg.bind_path))
             .bearer_auth(&cfg.api_token)
             .timeout(Duration::from_millis(cfg.request_timeout_ms))
@@ -506,15 +506,10 @@ impl WorkerRelay {
 
                 for (base_url, push_url, cfg) in targets {
                     let push_result = if Self::is_multimedia_topic(&topic) {
-                        Self::push_to_websocket(
-                            &ws_senders,
-                            &base_url,
-                            &cfg,
-                            &topic,
-                            data.clone(),
-                        )
+                        Self::push_to_websocket(&ws_senders, &base_url, &cfg, &topic, data.clone())
                     } else {
-                        Self::push_to_cloudflare(&client, &push_url, &cfg, &topic, data.clone()).await
+                        Self::push_to_cloudflare(&client, &push_url, &cfg, &topic, data.clone())
+                            .await
                     };
 
                     if let Err(e) = push_result {
@@ -631,8 +626,8 @@ impl WorkerRelay {
             format!("/{ws_path}")
         };
 
-        let mut url = Url::parse(base_url)
-            .with_context(|| format!("invalid base worker url: {base_url}"))?;
+        let mut url =
+            Url::parse(base_url).with_context(|| format!("invalid base worker url: {base_url}"))?;
 
         match url.scheme() {
             "https" => {

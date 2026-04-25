@@ -41,17 +41,17 @@ impl Tunnel {
         Ok(())
     }
 
-		/// https / quic, default: https
-		fn set_protocol(protocol: &str) -> &'static str {
-		    match protocol {
-		        "http2" => "http2",
-		        "quic" => "quic",
-		        _ => {
-		            warn!("Unsupported protocol '{}', defaulting to 'http2'", protocol);
-		            "http2"
-		        }
-		    }
-		}
+    /// https / quic, default: https
+    fn set_protocol(protocol: &str) -> &'static str {
+        match protocol {
+            "http2" => "http2",
+            "quic" => "quic",
+            _ => {
+                warn!("Unsupported protocol '{}', defaulting to 'http2'", protocol);
+                "http2"
+            }
+        }
+    }
 
     pub async fn start(local_port: u16, protocol: &str) -> Result<Self> {
         Self::ensure_cloudflared()?;
@@ -61,7 +61,8 @@ impl Tunnel {
         let mut child = Command::new("cloudflared")
             .args([
                 "tunnel",
-								"--protocol", Self::set_protocol(protocol),
+                "--protocol",
+                Self::set_protocol(protocol),
                 "--url",
                 &format!("http://127.0.0.1:{}", local_port),
             ])

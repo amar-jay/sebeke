@@ -49,8 +49,8 @@ pub struct RelayConfig {
 #[derive(Clone, Debug)]
 pub enum WorkerConfig {
     Cloudflare(CloudflareConfig),
-    AWS(AWSConfig),
-    Vercel(VercelConfig),
+    AWS(AWSConfig), // not implemented. too many technicalities that I don't want to deal with right now.
+    Vercel(VercelConfig), // not needed since vercel has "sunsetted" their workers product.
 }
 
 #[derive(Clone, Debug)]
@@ -65,7 +65,6 @@ pub struct CloudflareConfig {
     pub ws_path: String,
     pub pull_path: String,
     pub local_address: String,
-    // pub ingress_url: String, is this really needed? can't we just use the local_address for callbacks?
 }
 
 impl Default for CloudflareConfig {
@@ -81,7 +80,6 @@ impl Default for CloudflareConfig {
             ws_path: "/ws".to_string(),
             pull_path: "/pull".to_string(),
             local_address: "0.0.0.0:8787".to_string(),
-            // ingress_url: "http://localhost:8787".to_string(),
         }
     }
 }

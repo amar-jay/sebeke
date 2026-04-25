@@ -16,7 +16,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
-use sebeke::http::{
+use sebeke::relay::{
     cloudflare::WorkerRelay,
     config::{self, Relay},
 };
@@ -179,7 +179,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // --- Infrastructure setup ---
 
     let node = Arc::new(Node::new().await);
-    let relay = Arc::new(WorkerRelay::new(node.session.clone(), WorkerRelay::get_default_config()));
+    let relay = Arc::new(WorkerRelay::new(
+        node.session.clone(),
+        WorkerRelay::get_default_config(),
+    ));
     let port = std::env::var("PORT").unwrap_or_else(|_| "8787".to_string());
     println!("Starting relay and binding worker on port {}...", port);
     let local_address = format!("0.0.0.0:{}", port);
