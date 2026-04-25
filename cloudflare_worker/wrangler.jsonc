@@ -19,6 +19,20 @@
 			"binding": "EDGE_MACHINES",
 			"id": "eb70db3b369a4ce2ac524d20760cab4e"
 		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MULTIMEDIA_HUB",
+				"class_name": "MultimediaHub"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1_multimedia_hub",
+			"new_sqlite_classes": ["MultimediaHub"]
+		}
 	]
 	/**
 	 * Smart Placement

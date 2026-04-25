@@ -8,8 +8,12 @@ use tracing::{error, info, warn};
 
 use anyhow::{Context, Result, anyhow, bail};
 use dashmap::DashMap;
+use futures::{SinkExt, StreamExt};
 use moka::sync::Cache;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tokio::{sync::mpsc, task::JoinHandle};
+use tokio_tungstenite::{connect_async, tungstenite::Message};
+use url::Url;
 use zenoh::{Session, bytes::Encoding};
 
 use crate::http::{
@@ -61,6 +65,12 @@ pub struct WorkerRelay {
     /// Short-lived fingerprints of samples already considered for egress.
     /// Prevents rebroadcast amplification when the same payload re-enters.
     egress_seen: Arc<Cache<u64, ()>>,
+
+    /// One outbound websocket sender channel per worker base URL.
+    ws_senders: Arc<DashMap<String, mpsc::UnboundedSender<Vec<u8>>>>,
+
+    /// Background websocket tasks keyed by worker base URL.
+    ws_tasks: Arc<DashMap<String, JoinHandle<()>>>,
 }
 
 impl WorkerRelay {
@@ -87,11 +97,27 @@ impl WorkerRelay {
             _ => Err(anyhow!("unsupported serialization encoding")),
         }
     }
+
+    pub async fn attach_worker_ws_only(
+        &self,
+        base_url: &str,
+        cfg: CloudflareConfig,
+    ) -> Result<()> {
+        self.workers
+            .insert(base_url.to_string(), WorkerConfig::Cloudflare(cfg.clone()));
+        self.start_worker_ws_client(base_url, cfg)?;
+        self.topic_cache.invalidate_all();
+
+        info!(base_url, "worker attached in websocket-only mode (no bind/tunnel)");
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Relay for WorkerRelay {
     fn new(session: Arc<Session>, cfg: RelayConfig) -> WorkerRelay {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
         let default = Self::get_default_config();
         let cfg = RelayConfig {
             cache_max_cap: if cfg.cache_max_cap == 0 {
@@ -124,6 +150,8 @@ impl Relay for WorkerRelay {
                     .time_to_live(Duration::from_secs(3))
                     .build(),
             ),
+            ws_senders: Arc::new(DashMap::new()),
+            ws_tasks: Arc::new(DashMap::new()),
             cfg: cfg,
         }
     }
@@ -156,7 +184,7 @@ impl Relay for WorkerRelay {
 
     async fn bind_worker(&self, base_url: &str, config: WorkerConfig) -> Result<()> {
         let cfg = match &config {
-            WorkerConfig::Cloudflare(c) => c,
+            WorkerConfig::Cloudflare(c) => c.clone(),
             _ => bail!("bind_worker only supports Cloudflare configs"),
         };
 
@@ -177,22 +205,28 @@ impl Relay for WorkerRelay {
         self.tunnels.insert(cfg.machine_id.clone(), tunnel);
 
         // Now bind with the cloudflare worker, providing our public URL
-        self.client
+        let bind_resp = self.client
             .post(format!("{}{}", base_url, cfg.bind_path))
             .bearer_auth(&cfg.api_token)
             .timeout(Duration::from_millis(cfg.request_timeout_ms))
             .json(&BindPayload {
                 machine_id: &cfg.machine_id,
                 ingress_url: &ingress_url,
-                ttl_ms: Some(self.cfg.cache_ttl.as_millis() as u64),
+                // Worker expects KV expiration TTL in seconds, minimum 60.
+                ttl_ms: Some(self.cfg.cache_ttl.as_secs().max(60)),
             })
             .send()
             .await
-            .context("failed to reach Cloudflare worker during bind")?
-            .error_for_status()
-            .context("Cloudflare worker rejected bind request")?;
+            .context("failed to reach Cloudflare worker during bind")?;
+
+        if !bind_resp.status().is_success() {
+            let status = bind_resp.status();
+            let body = bind_resp.text().await.unwrap_or_default();
+            bail!("Cloudflare worker rejected bind request ({status}): {body}");
+        }
 
         self.workers.insert(base_url.to_string(), config);
+        self.start_worker_ws_client(base_url, cfg.clone())?;
         self.topic_cache.invalidate_all();
 
         info!(base_url, ingress_url, "worker bound and tunneled");
@@ -208,6 +242,11 @@ impl Relay for WorkerRelay {
             .ok_or_else(|| anyhow!("no active worker for: {base_url}"))?;
 
         if let WorkerConfig::Cloudflare(cfg) = binding {
+            if let Some((_, handle)) = self.ws_tasks.remove(base_url) {
+                handle.abort();
+            }
+            self.ws_senders.remove(base_url);
+
             let (_, mut tunnel) = self
                 .tunnels
                 .remove(&cfg.machine_id)
@@ -442,6 +481,7 @@ impl WorkerRelay {
         let client = self.client.clone();
         let topic_cache = self.topic_cache.clone();
         let egress_seen = self.egress_seen.clone();
+        let ws_senders = self.ws_senders.clone();
 
         tokio::spawn(async move {
             while let Ok(sample) = subscriber.recv_async().await {
@@ -464,14 +504,27 @@ impl WorkerRelay {
                     continue;
                 }
 
-                for (push_url, cfg) in targets {
-                    match Self::push_to_cloudflare(&client, &push_url, &cfg, &topic, data.clone())
-                        .await
-                    {
-                        Err(e) => {
-                            error!(url = %push_url, topic = %topic, error = %e, "egress push failed")
-                        }
-												_ => (),
+                for (base_url, push_url, cfg) in targets {
+                    let push_result = if Self::is_multimedia_topic(&topic) {
+                        Self::push_to_websocket(
+                            &ws_senders,
+                            &base_url,
+                            &cfg,
+                            &topic,
+                            data.clone(),
+                        )
+                    } else {
+                        Self::push_to_cloudflare(&client, &push_url, &cfg, &topic, data.clone()).await
+                    };
+
+                    if let Err(e) = push_result {
+                        error!(
+                            base_url = %base_url,
+                            url = %push_url,
+                            topic = %topic,
+                            error = %e,
+                            "egress push failed"
+                        );
                     }
                 }
             }
@@ -490,9 +543,15 @@ impl WorkerRelay {
         proxy_registry: &Arc<DashMap<String, Vec<String>>>,
         workers: &Arc<DashMap<String, WorkerConfig>>,
         cache: &Arc<Cache<String, Vec<(String, CloudflareConfig)>>>,
-    ) -> Vec<(String, CloudflareConfig)> {
+    ) -> Vec<(String, String, CloudflareConfig)> {
         if let Some(cached) = cache.get(topic) {
-            return cached;
+            return cached
+                .into_iter()
+                .map(|(base_url, cfg)| {
+                    let push_url = format!("{}{}", base_url, cfg.push_path);
+                    (base_url, push_url, cfg)
+                })
+                .collect();
         }
 
         let mut matched: Vec<(String, CloudflareConfig)> = Vec::new();
@@ -519,8 +578,7 @@ impl WorkerRelay {
                     let base_url = worker_entry.key();
                     if resolved_url.starts_with(base_url.as_str()) {
                         if let WorkerConfig::Cloudflare(cfg) = worker_entry.value() {
-                            let push_url = format!("{}{}", base_url, cfg.push_path);
-                            matched.push((push_url, cfg.clone()));
+                            matched.push((base_url.clone(), cfg.clone()));
                         }
                     }
                 }
@@ -529,6 +587,153 @@ impl WorkerRelay {
 
         cache.insert(topic.to_string(), matched.clone());
         matched
+            .into_iter()
+            .map(|(base_url, cfg)| {
+                let push_url = format!("{}{}", base_url, cfg.push_path);
+                (base_url, push_url, cfg)
+            })
+            .collect()
+    }
+
+    fn is_multimedia_topic(topic: &str) -> bool {
+        !topic.starts_with("telemetry")
+    }
+
+    fn push_to_websocket(
+        ws_senders: &Arc<DashMap<String, mpsc::UnboundedSender<Vec<u8>>>>,
+        base_url: &str,
+        cfg: &CloudflareConfig,
+        topic: &str,
+        data: Vec<u8>,
+    ) -> Result<()> {
+        let payload = PushPayload {
+            machine_id: cfg.machine_id.clone(),
+            topic: topic.to_string(),
+            data,
+        };
+
+        let bytes = Self::serialize(&payload, Encoding::APPLICATION_CBOR)
+            .context("failed to serialize websocket payload")?;
+
+        let sender = ws_senders
+            .get(base_url)
+            .ok_or_else(|| anyhow!("websocket sender missing for worker: {base_url}"))?;
+
+        sender
+            .send(bytes)
+            .map_err(|_| anyhow!("failed to queue websocket payload for worker: {base_url}"))
+    }
+
+    fn to_worker_ws_url(base_url: &str, ws_path: &str, machine_id: &str) -> Result<Url> {
+        let normalized = if ws_path.starts_with('/') {
+            ws_path.to_string()
+        } else {
+            format!("/{ws_path}")
+        };
+
+        let mut url = Url::parse(base_url)
+            .with_context(|| format!("invalid base worker url: {base_url}"))?;
+
+        match url.scheme() {
+            "https" => {
+                url.set_scheme("wss")
+                    .map_err(|_| anyhow!("unable to set scheme wss"))?;
+            }
+            "http" => {
+                url.set_scheme("ws")
+                    .map_err(|_| anyhow!("unable to set scheme ws"))?;
+            }
+            "wss" | "ws" => {}
+            scheme => bail!("unsupported worker url scheme for websocket: {scheme}"),
+        }
+
+        url.set_path(&normalized);
+        url.set_query(Some(&format!("machine_id={machine_id}")));
+        Ok(url)
+    }
+
+    fn start_worker_ws_client(&self, base_url: &str, cfg: CloudflareConfig) -> Result<()> {
+        if let Some((_, handle)) = self.ws_tasks.remove(base_url) {
+            handle.abort();
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
+        self.ws_senders.insert(base_url.to_string(), tx);
+
+        let ws_url = Self::to_worker_ws_url(base_url, &cfg.ws_path, &cfg.machine_id)?;
+        let session = self.session.clone();
+        let base = base_url.to_string();
+
+        let task = tokio::spawn(async move {
+            let connect = connect_async(ws_url.as_str()).await;
+            let Ok((stream, _resp)) = connect else {
+                if let Err(err) = connect {
+                    error!(base_url = %base, ws_url = %ws_url, error = %err, "websocket connect failed");
+                }
+                return;
+            };
+
+            info!(base_url = %base, ws_url = %ws_url, "connected websocket relay");
+            let (mut write, mut read) = stream.split();
+
+            loop {
+                tokio::select! {
+                    outbound = rx.recv() => {
+                        let Some(bytes) = outbound else {
+                            return;
+                        };
+
+                        if let Err(err) = write.send(Message::Binary(bytes.into())).await {
+                            error!(base_url = %base, error = %err, "websocket send failed; terminating websocket relay");
+                            return;
+                        }
+                    }
+                    inbound = read.next() => {
+                        let Some(item) = inbound else {
+                            error!(base_url = %base, "websocket closed by remote; terminating websocket relay");
+                            return;
+                        };
+
+                        match item {
+                            Ok(Message::Binary(bytes)) => {
+                                if let Err(err) = Self::ingest_pull_payload_bytes(&session, &bytes).await {
+                                    error!(base_url = %base, error = %err, "failed to ingest websocket payload; terminating websocket relay");
+                                    return;
+                                }
+                            }
+                            Ok(Message::Close(_)) => {
+                                error!(base_url = %base, "websocket close frame received; terminating websocket relay");
+                                return;
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                error!(base_url = %base, error = %err, "websocket read failed; terminating websocket relay");
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        self.ws_tasks.insert(base_url.to_string(), task);
+        Ok(())
+    }
+
+    async fn ingest_pull_payload_bytes(session: &Arc<Session>, bytes: &[u8]) -> Result<()> {
+        let payloads = Self::deserialize::<Vec<PullPayload>>(bytes, Encoding::APPLICATION_CBOR)
+            .context("failed to decode websocket pull payload")?;
+
+        for p in payloads {
+            let ingested_topic = format!("{}{}", p.topic, INGESTED_TOPIC_SUFFIX);
+            session
+                .put(ingested_topic, p.data)
+                .encoding(Encoding::APPLICATION_CBOR)
+                .await
+                .map_err(|e| anyhow!("session.put failed for websocket ingress: {e}"))?;
+        }
+
+        Ok(())
     }
 
     /// Serializes `topic` + `data` into a CBOR multipart body and POSTs it
