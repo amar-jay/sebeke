@@ -34,7 +34,7 @@ use node::Node;
 // https://cloudflare.abdelmanan-abdelrahman03.workers.dev
 
 const WORKER_URL: &str = "https://cloudflare.abdelmanan-abdelrahman03.workers.dev";
-const TOPIC: &str = "chat";
+const TOPIC: &str = "telemetry_chat";
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -184,22 +184,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
         WorkerRelay::get_default_config(),
     ));
     let port = std::env::var("PORT").unwrap_or_else(|_| "8787".to_string());
-    println!("Starting relay and binding worker on port {}...", port);
     let local_address = format!("0.0.0.0:{}", port);
     let own_id = node.get_id().await?;
+    let telemetry_mode = TOPIC.starts_with("telemetry");
 
-    relay
-        .bind_worker(
-            WORKER_URL,
-            config::WorkerConfig::Cloudflare(config::CloudflareConfig {
-                api_token: "local-dev-token".to_owned(),
-                machine_id: own_id.clone(),
-                push_path: "/".to_owned(),
-                local_address,
-                ..Default::default()
-            }),
-        )
-        .await?;
+    let worker_cfg = config::CloudflareConfig {
+        api_token: "local-dev-token".to_owned(),
+        machine_id: own_id.clone(),
+        push_path: "/push".to_owned(),
+        ws_path: "/ws".to_owned(),
+        pull_path: "/pull".to_owned(),
+        local_address,
+        ..Default::default()
+    };
+
+    if telemetry_mode {
+        // println!("Starting relay and binding worker on port {}...", port);
+        relay
+            .bind_worker(WORKER_URL, config::WorkerConfig::Cloudflare(worker_cfg))
+            .await?;
+    } else {
+        // println!(
+        //     "Starting relay in websocket-only mode for topic '{}' (skipping bind/tunnel)",
+        //     TOPIC
+        // );
+        relay.attach_worker_ws_only(WORKER_URL, worker_cfg).await?;
+    }
 
     relay.register_proxy(TOPIC, &format!("{}/", WORKER_URL))?;
     let relay_listener = relay.clone();
