@@ -19,8 +19,8 @@ use axum::{
 };
 use clap::Parser;
 use sebeke::relay::{
-    worker::WorkerRelay,
     config::{self, Relay},
+    worker::WorkerRelay,
 };
 use tokio::{net::TcpListener, sync::RwLock};
 

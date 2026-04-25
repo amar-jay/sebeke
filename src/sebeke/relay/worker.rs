@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, hash_map::DefaultHasher},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use tracing::{error, info, warn};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -16,7 +12,8 @@ use zenoh::{Session, bytes::Encoding};
 
 use super::{
     config::{CloudflareConfig, RelayConfig},
-    tunnel::Tunnel, utils,
+    tunnel::Tunnel,
+    utils,
 };
 
 use super::config::{Relay, WorkerConfig};
@@ -72,8 +69,6 @@ pub struct WorkerRelay {
 }
 
 impl WorkerRelay {
-
-
     pub async fn attach_worker_ws_only(&self, base_url: &str, cfg: CloudflareConfig) -> Result<()> {
         self.workers
             .insert(base_url.to_string(), WorkerConfig::Cloudflare(cfg.clone()));
@@ -400,15 +395,16 @@ impl WorkerRelay {
             }
         };
 
-        let payloads =
-            match utils::deserialize::<Vec<PullPayload>>(bytes.as_ref(), Encoding::APPLICATION_CBOR)
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    error!(error = %e, "failed to deserialize pull payload");
-                    return false;
-                }
-            };
+        let payloads = match utils::deserialize::<Vec<PullPayload>>(
+            bytes.as_ref(),
+            Encoding::APPLICATION_CBOR,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                error!(error = %e, "failed to deserialize pull payload");
+                return false;
+            }
+        };
 
         let mut all_ok = true;
         for p in payloads {
@@ -720,6 +716,4 @@ impl WorkerRelay {
 
         Ok(())
     }
-
-
 }

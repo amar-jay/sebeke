@@ -6,6 +6,10 @@ const TOPIC: &str = "sensors/imu/1";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-	println!("hello world! worker_url: {worker_url}\ttopic:{topic}", worker_url=WORKER_URL, topic=TOPIC);
-	Ok(())
+    println!(
+        "hello world! worker_url: {worker_url}\ttopic:{topic}",
+        worker_url = WORKER_URL,
+        topic = TOPIC
+    );
+    Ok(())
 }

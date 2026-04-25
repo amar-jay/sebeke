@@ -17,8 +17,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use sebeke::relay::{
-    worker::WorkerRelay,
     config::{self, Relay},
+    worker::WorkerRelay,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;

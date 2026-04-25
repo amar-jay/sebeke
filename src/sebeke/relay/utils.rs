@@ -1,11 +1,11 @@
 use anyhow::{Result, anyhow, bail};
 use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
-use url::Url;
-use zenoh::bytes::Encoding;
-use std::collections::{hash_map::DefaultHasher};
+use std::collections::hash_map::DefaultHasher;
 use std::hash::Hash;
 use std::hash::Hasher;
+use url::Url;
+use zenoh::bytes::Encoding;
 
 #[derive(Debug)]
 pub enum ResolverError {
@@ -150,7 +150,6 @@ pub fn deserialize<T: DeserializeOwned>(bytes: &[u8], encoding: Encoding) -> Res
     }
 }
 
-
 pub fn to_worker_ws_url(base_url: &str, ws_path: &str, machine_id: &str) -> Result<Url> {
     let normalized = if ws_path.starts_with('/') {
         ws_path.to_string()
@@ -179,12 +178,12 @@ pub fn to_worker_ws_url(base_url: &str, ws_path: &str, machine_id: &str) -> Resu
     Ok(url)
 }
 
-  pub fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        topic.hash(&mut hasher);
-        data.hash(&mut hasher);
-        hasher.finish()
-    }
+pub fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    topic.hash(&mut hasher);
+    data.hash(&mut hasher);
+    hasher.finish()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
