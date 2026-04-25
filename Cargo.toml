@@ -60,12 +60,12 @@ teloxide = "0.11"
 # A specific executable node
 [[bin]]
 name = "telegram_node"
-path = "src/nodes/telegram/main.rs"
+path = "example_nodes/telegram/main.rs"
 
 [[bin]]
 name = "tui_node"
-path = "src/nodes/tui/main.rs"
+path = "example_nodes/tui/main.rs"
 
 [[bin]]
 name = "camera_node"
-path = "src/nodes/camera/main.rs"
+path = "example_nodes/camera/main.rs"

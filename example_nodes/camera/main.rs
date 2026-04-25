@@ -19,12 +19,12 @@ use axum::{
 };
 use clap::Parser;
 use sebeke::relay::{
-    cloudflare::WorkerRelay,
+    worker::WorkerRelay,
     config::{self, Relay},
 };
 use tokio::{net::TcpListener, sync::RwLock};
 
-#[path = "../../node.rs"]
+#[path = "../../src/node/mod.rs"]
 pub mod node;
 use node::Node;
 

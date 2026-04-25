@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
-    hash::{Hash, Hasher},
     sync::Arc,
     time::Duration,
 };
@@ -10,15 +9,14 @@ use anyhow::{Context, Result, anyhow, bail};
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use moka::sync::Cache;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use tokio::{sync::mpsc, task::JoinHandle};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use url::Url;
 use zenoh::{Session, bytes::Encoding};
 
-use crate::relay::{
+use super::{
     config::{CloudflareConfig, RelayConfig},
-    tunnel::Tunnel,
+    tunnel::Tunnel, utils,
 };
 
 use super::config::{Relay, WorkerConfig};
@@ -74,29 +72,7 @@ pub struct WorkerRelay {
 }
 
 impl WorkerRelay {
-    fn serialize<T: Serialize>(value: &T, encoding: Encoding) -> Result<Vec<u8>> {
-        let mut buf = Vec::with_capacity(128);
-        match encoding {
-            Encoding::APPLICATION_CBOR => {
-                ciborium::into_writer(value, &mut buf)
-                    .map_err(|e| anyhow!("CBOR serialization failed: {e}"))?;
-                Ok(buf)
-            }
-            _ => Err(anyhow!("unsupported serialization encoding")),
-        }
-    }
 
-    fn deserialize<T: DeserializeOwned>(bytes: &[u8], encoding: Encoding) -> Result<T> {
-        match encoding {
-            Encoding::APPLICATION_CBOR => ciborium::from_reader(bytes).map_err(|e| {
-                anyhow!(
-                    "CBOR deserialization into {} failed: {e}",
-                    std::any::type_name::<T>()
-                )
-            }),
-            _ => Err(anyhow!("unsupported serialization encoding")),
-        }
-    }
 
     pub async fn attach_worker_ws_only(&self, base_url: &str, cfg: CloudflareConfig) -> Result<()> {
         self.workers
@@ -425,7 +401,7 @@ impl WorkerRelay {
         };
 
         let payloads =
-            match Self::deserialize::<Vec<PullPayload>>(bytes.as_ref(), Encoding::APPLICATION_CBOR)
+            match utils::deserialize::<Vec<PullPayload>>(bytes.as_ref(), Encoding::APPLICATION_CBOR)
             {
                 Ok(p) => p,
                 Err(e) => {
@@ -491,7 +467,7 @@ impl WorkerRelay {
                 }
                 let data = sample.payload().to_bytes().into_owned();
 
-                let fingerprint = Self::sample_fingerprint(&topic, &data);
+                let fingerprint = utils::sample_fingerprint(&topic, &data);
                 if egress_seen.contains_key(&fingerprint) {
                     continue;
                 }
@@ -607,7 +583,7 @@ impl WorkerRelay {
             data,
         };
 
-        let bytes = Self::serialize(&payload, Encoding::APPLICATION_CBOR)
+        let bytes = utils::serialize(&payload, Encoding::APPLICATION_CBOR)
             .context("failed to serialize websocket payload")?;
 
         let sender = ws_senders
@@ -619,34 +595,6 @@ impl WorkerRelay {
             .map_err(|_| anyhow!("failed to queue websocket payload for worker: {base_url}"))
     }
 
-    fn to_worker_ws_url(base_url: &str, ws_path: &str, machine_id: &str) -> Result<Url> {
-        let normalized = if ws_path.starts_with('/') {
-            ws_path.to_string()
-        } else {
-            format!("/{ws_path}")
-        };
-
-        let mut url =
-            Url::parse(base_url).with_context(|| format!("invalid base worker url: {base_url}"))?;
-
-        match url.scheme() {
-            "https" => {
-                url.set_scheme("wss")
-                    .map_err(|_| anyhow!("unable to set scheme wss"))?;
-            }
-            "http" => {
-                url.set_scheme("ws")
-                    .map_err(|_| anyhow!("unable to set scheme ws"))?;
-            }
-            "wss" | "ws" => {}
-            scheme => bail!("unsupported worker url scheme for websocket: {scheme}"),
-        }
-
-        url.set_path(&normalized);
-        url.set_query(Some(&format!("machine_id={machine_id}")));
-        Ok(url)
-    }
-
     fn start_worker_ws_client(&self, base_url: &str, cfg: CloudflareConfig) -> Result<()> {
         if let Some((_, handle)) = self.ws_tasks.remove(base_url) {
             handle.abort();
@@ -655,7 +603,7 @@ impl WorkerRelay {
         let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
         self.ws_senders.insert(base_url.to_string(), tx);
 
-        let ws_url = Self::to_worker_ws_url(base_url, &cfg.ws_path, &cfg.machine_id)?;
+        let ws_url = utils::to_worker_ws_url(base_url, &cfg.ws_path, &cfg.machine_id)?;
         let session = self.session.clone();
         let base = base_url.to_string();
 
@@ -716,7 +664,7 @@ impl WorkerRelay {
     }
 
     async fn ingest_pull_payload_bytes(session: &Arc<Session>, bytes: &[u8]) -> Result<()> {
-        let payloads = Self::deserialize::<Vec<PullPayload>>(bytes, Encoding::APPLICATION_CBOR)
+        let payloads = utils::deserialize::<Vec<PullPayload>>(bytes, Encoding::APPLICATION_CBOR)
             .context("failed to decode websocket pull payload")?;
 
         for p in payloads {
@@ -747,7 +695,7 @@ impl WorkerRelay {
             data,
         };
 
-        let body = Self::serialize(&payload, Encoding::APPLICATION_CBOR)
+        let body = utils::serialize(&payload, Encoding::APPLICATION_CBOR)
             .context("failed to serialize push payload")?;
 
         let part = multipart::Part::bytes(body)
@@ -773,10 +721,5 @@ impl WorkerRelay {
         Ok(())
     }
 
-    fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        topic.hash(&mut hasher);
-        data.hash(&mut hasher);
-        hasher.finish()
-    }
+
 }

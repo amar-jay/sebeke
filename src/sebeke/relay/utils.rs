@@ -1,4 +1,11 @@
+use anyhow::{Result, anyhow, bail};
 use regex::Regex;
+use serde::{Serialize, de::DeserializeOwned};
+use url::Url;
+use zenoh::bytes::Encoding;
+use std::collections::{hash_map::DefaultHasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 
 #[derive(Debug)]
 pub enum ResolverError {
@@ -119,6 +126,65 @@ fn find_next_wildcard(s: &str) -> Option<(&'static str, usize)> {
     earliest.map(|(idx, wc)| (wc, idx))
 }
 
+pub fn serialize<T: Serialize>(value: &T, encoding: Encoding) -> Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(128);
+    match encoding {
+        Encoding::APPLICATION_CBOR => {
+            ciborium::into_writer(value, &mut buf)
+                .map_err(|e| anyhow!("CBOR serialization failed: {e}"))?;
+            Ok(buf)
+        }
+        _ => Err(anyhow!("unsupported serialization encoding")),
+    }
+}
+
+pub fn deserialize<T: DeserializeOwned>(bytes: &[u8], encoding: Encoding) -> Result<T> {
+    match encoding {
+        Encoding::APPLICATION_CBOR => ciborium::from_reader(bytes).map_err(|e| {
+            anyhow!(
+                "CBOR deserialization into {} failed: {e}",
+                std::any::type_name::<T>()
+            )
+        }),
+        _ => Err(anyhow!("unsupported serialization encoding")),
+    }
+}
+
+
+pub fn to_worker_ws_url(base_url: &str, ws_path: &str, machine_id: &str) -> Result<Url> {
+    let normalized = if ws_path.starts_with('/') {
+        ws_path.to_string()
+    } else {
+        format!("/{ws_path}")
+    };
+
+    let mut url =
+        Url::parse(base_url).map_err(|_| anyhow!("invalid base worker url: {base_url}"))?;
+
+    match url.scheme() {
+        "https" => {
+            url.set_scheme("wss")
+                .map_err(|_| anyhow!("unable to set scheme wss"))?;
+        }
+        "http" => {
+            url.set_scheme("ws")
+                .map_err(|_| anyhow!("unable to set scheme ws"))?;
+        }
+        "wss" | "ws" => {}
+        scheme => bail!("unsupported worker url scheme for websocket: {scheme}"),
+    }
+
+    url.set_path(&normalized);
+    url.set_query(Some(&format!("machine_id={machine_id}")));
+    Ok(url)
+}
+
+  pub fn sample_fingerprint(topic: &str, data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        topic.hash(&mut hasher);
+        data.hash(&mut hasher);
+        hasher.finish()
+    }
 #[cfg(test)]
 mod tests {
     use super::*;

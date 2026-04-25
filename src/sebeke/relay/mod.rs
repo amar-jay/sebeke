@@ -1,4 +1,4 @@
-pub mod cloudflare;
+pub mod worker;
 pub mod config;
 pub mod tunnel;
 mod utils;
